@@ -861,15 +861,44 @@ It will put a snapshot up into the apache snapshot repository for you.
 
 Everyone is encouraged to try and vote on HBase release candidates.
 Only the votes of PMC members are binding.
-PMC members, please read this WIP doc on policy voting for a release candidate, link:https://github.com/rectang/asfrelease/blob/master/release.md[Release
-                Policy]. [quote]_Before casting +1 binding votes, individuals are required to
-                download the signed source code package onto their own hardware, compile it as
-                provided, and test the resulting executable on their own platform, along with also
-                validating cryptographic signatures and verifying that the package meets the
-                requirements of the ASF policy on releases._ Regards the latter, run +mvn apache-rat:check+ to verify all files are suitably licensed.
-See link:http://search-hadoop.com/m/DHED4dhFaU[HBase, mail # dev - On
-                recent discussion clarifying ASF release policy].
+PMC members, please read this WIP doc on policy voting for a release candidate, link:https://github.com/rectang/asfrelease/blob/master/release.md[Release Policy].
+
+[quote]
+____
+Before casting +1 binding votes, individuals are required to
+download the signed source code package onto their own hardware, compile it as
+provided, and test the resulting executable on their own platform, along with also
+validating cryptographic signatures and verifying that the package meets the
+requirements of the ASF policy on releases.
+____
+
+Regards the latter, run `mvn apache-rat:check` to verify all files are suitably licensed.
+See link:http://search-hadoop.com/m/DHED4dhFaU[HBase, mail # dev - On recent discussion clarifying ASF release policy]
 for how we arrived at this process.
+
+To help with the release verfication `hbase-vote.sh` shell script is available under `dev-support` directory of HBase source. Following are the usage details.
+
+[source,bourne]
+----
+./dev-support/hbase-vote.sh -h
+hbase-vote. A script for standard vote which verifies the following items
+1. Checksum of sources and binaries
+2. Signature of sources and binaries
+3. Rat check
+4. Built from source
+5. Unit tests
+
+Usage: hbase-vote.sh -s | --source <url> [-k | --key <signature>] [-f | --keys-file-url <url>] [-o | --output-dir </path/to/use>]
+       hbase-vote.sh -h | --help
+
+  -h | --help                   Show this screen.
+  -s | --source '<url>'         A URL pointing to the release candidate sources and binaries
+                                e.g. https://dist.apache.org/repos/dist/dev/hbase/hbase-<version>RC0/
+  -k | --key '<signature>'      A signature of the public key, e.g. 9AD2AE49
+  -f | --keys-file-url '<url>'   the URL of the key file, default is
+                                http://www.apache.org/dist/hbase/KEYS
+  -o | --output-dir '</path>'   directory which has the stdout and stderr of each verification target
+----
 
 [[hbase.release.announcement]]
 == Announcing Releases
@@ -2295,19 +2324,37 @@ message is in their patch and you can use that, but be sure the JIRA ID is at
 the front of the commit message, even if the contributor left it out.
 
 [[committer.amending.author]]
-====== Add Amending-Author when a conflict cherrypick backporting
+====== Use GitHub's "Co-authored-by" when there are multiple authors
 
 We've established the practice of committing to master and then cherry picking back to branches whenever possible, unless
 
 * it's breaking compat: In which case, if it can go in minor releases, backport to branch-1 and branch-2.
 * it's a new feature: No for maintenance releases, For minor releases, discuss and arrive at consensus.
 
-When there is a minor conflict we can fix it up and just proceed with the commit.
-The resulting commit retains the original author.
-When the amending author is different from the original committer, add notice of this at the end of the commit message as: `Amending-Author: Author
-                                <committer&apache>` See discussion at link:http://search-hadoop.com/m/DHED4wHGYS[HBase, mail # dev
-                                - [DISCUSSION] Best practice when amending commits cherry picked
-                                from master to branch].
+There are occasions when there are multiple author for a patch.
+For example when there is a minor conflict we can fix it up and just proceed with the commit.
+The amending author will be different from the original committer, so you should also attribute to the original author by
+adding one or more `Co-authored-by` trailers to the commit's message.
+See link:https://help.github.com/en/articles/creating-a-commit-with-multiple-authors/[the GitHub documentation for "Creating a commit with multiple authors"].
+
+In short, these are the steps to add Co-authors that will be tracked by GitHub:
+
+. Collect the name and email address for each co-author.
+. Commit the change, but after your commit description, instead of a closing quotation, add two empty lines. (Do not close the commit message with a quotation mark)
+. On the next line of the commit message, type `Co-authored-by: name <name@example.com>`. After the co-author information, add a closing quotation mark.
+
+Here is the example from the GitHub page, using 2 Co-authors:
+[source,xml]
+----
+$ git commit -m "Refactor usability tests.
+>
+>
+Co-authored-by: name <name@example.com>
+Co-authored-by: another-name <another-name@example.com>"
+----
+
+Note: `Amending-Author: Author <committer@apache>` was used prior to this
+link:https://lists.apache.org/thread.html/f00b5f9b65570e777dbb31c37d7b0ffc55c5fc567aefdb456608a042@%3Cdev.hbase.apache.org%3E[DISCUSSION].
 
 ====== Close related GitHub PRs
 

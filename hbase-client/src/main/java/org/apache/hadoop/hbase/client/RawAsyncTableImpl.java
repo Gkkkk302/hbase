@@ -46,6 +46,8 @@ import org.apache.hadoop.hbase.ipc.HBaseRpcController;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
@@ -77,6 +79,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.CompareType
 @InterfaceAudience.Private
 class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
 
+  private static final Logger LOG = LoggerFactory.getLogger(RawAsyncTableImpl.class);
+
   private final AsyncConnectionImpl conn;
 
   private final Timer retryTimer;
@@ -99,6 +103,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
 
   private final long pauseNs;
 
+  private final long pauseForCQTBENs;
+
   private final int maxAttempts;
 
   private final int startLogErrorsCnt;
@@ -113,6 +119,16 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
     this.operationTimeoutNs = builder.operationTimeoutNs;
     this.scanTimeoutNs = builder.scanTimeoutNs;
     this.pauseNs = builder.pauseNs;
+    if (builder.pauseForCQTBENs < builder.pauseNs) {
+      LOG.warn(
+        "Configured value of pauseForCQTBENs is {} ms, which is less than" +
+          " the normal pause value {} ms, use the greater one instead",
+        TimeUnit.NANOSECONDS.toMillis(builder.pauseForCQTBENs),
+        TimeUnit.NANOSECONDS.toMillis(builder.pauseNs));
+      this.pauseForCQTBENs = builder.pauseNs;
+    } else {
+      this.pauseForCQTBENs = builder.pauseForCQTBENs;
+    }
     this.maxAttempts = builder.maxAttempts;
     this.startLogErrorsCnt = builder.startLogErrorsCnt;
     this.defaultScannerCaching = tableName.isSystemTable() ? conn.connConf.getMetaScannerCaching()
@@ -128,6 +144,16 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
   @Override
   public Configuration getConfiguration() {
     return conn.getConfiguration();
+  }
+
+  @Override
+  public CompletableFuture<TableDescriptor> getDescriptor() {
+    return conn.getAdmin().getDescriptor(tableName);
+  }
+
+  @Override
+  public AsyncTableRegionLocator getRegionLocator() {
+    return conn.getRegionLocator(tableName);
   }
 
   @FunctionalInterface
@@ -210,8 +236,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
     return conn.callerFactory.<T> single().table(tableName).row(row).priority(priority)
       .rpcTimeout(rpcTimeoutNs, TimeUnit.NANOSECONDS)
       .operationTimeout(operationTimeoutNs, TimeUnit.NANOSECONDS)
-      .pause(pauseNs, TimeUnit.NANOSECONDS).maxAttempts(maxAttempts)
-      .startLogErrorsCnt(startLogErrorsCnt);
+      .pause(pauseNs, TimeUnit.NANOSECONDS).pauseForCQTBE(pauseForCQTBENs, TimeUnit.NANOSECONDS)
+      .maxAttempts(maxAttempts).startLogErrorsCnt(startLogErrorsCnt);
   }
 
   private <T, R extends OperationWithAttributes & Row> SingleRequestCallerBuilder<T> newCaller(
@@ -232,7 +258,7 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
   public CompletableFuture<Result> get(Get get) {
     return timelineConsistentRead(conn.getLocator(), tableName, get, get.getRow(),
       RegionLocateType.CURRENT, replicaId -> get(get, replicaId), readRpcTimeoutNs,
-      conn.connConf.getPrimaryCallTimeoutNs(), retryTimer);
+      conn.connConf.getPrimaryCallTimeoutNs(), retryTimer, conn.getConnectionMetrics());
   }
 
   @Override
@@ -357,8 +383,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
       preCheck();
       return RawAsyncTableImpl.this
         .<Boolean> newCaller(row, mutation.getMaxPriority(), rpcTimeoutNs)
-        .action((controller, loc, stub) -> RawAsyncTableImpl.<Boolean> mutateRow(controller, loc,
-          stub, mutation,
+        .action((controller, loc, stub) -> RawAsyncTableImpl.this.<Boolean> mutateRow(controller,
+          loc, stub, mutation,
           (rn, rm) -> RequestConverter.buildMutateRequest(rn, row, family, qualifier,
             new BinaryComparator(value), CompareType.valueOf(op.name()), timeRange, rm),
           resp -> resp.getExists()))
@@ -373,7 +399,7 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
 
   // We need the MultiRequest when constructing the org.apache.hadoop.hbase.client.MultiResponse,
   // so here I write a new method as I do not want to change the abstraction of call method.
-  private static <RESP> CompletableFuture<RESP> mutateRow(HBaseRpcController controller,
+  private <RESP> CompletableFuture<RESP> mutateRow(HBaseRpcController controller,
       HRegionLocation loc, ClientService.Interface stub, RowMutations mutation,
       Converter<MultiRequest, byte[], RowMutations> reqConvert,
       Function<Result, RESP> respConverter) {
@@ -391,6 +417,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
             try {
               org.apache.hadoop.hbase.client.MultiResponse multiResp =
                 ResponseConverter.getResults(req, resp, controller.cellScanner());
+              ConnectionUtils.updateStats(conn.getStatisticsTracker(), conn.getConnectionMetrics(),
+                loc.getServerName(), multiResp);
               Throwable ex = multiResp.getException(regionName);
               if (ex != null) {
                 future.completeExceptionally(ex instanceof IOException ? ex
@@ -415,8 +443,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
   @Override
   public CompletableFuture<Void> mutateRow(RowMutations mutation) {
     return this.<Void> newCaller(mutation.getRow(), mutation.getMaxPriority(), writeRpcTimeoutNs)
-      .action((controller, loc, stub) -> RawAsyncTableImpl.<Void> mutateRow(controller, loc, stub,
-        mutation, (rn, rm) -> {
+      .action((controller, loc, stub) -> this.<Void> mutateRow(controller, loc, stub, mutation,
+        (rn, rm) -> {
           RegionAction.Builder regionMutationBuilder = RequestConverter.buildRegionAction(rn, rm);
           regionMutationBuilder.setAtomic(true);
           return MultiRequest.newBuilder().addRegionAction(regionMutationBuilder.build()).build();
@@ -439,7 +467,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
   @Override
   public void scan(Scan scan, AdvancedScanResultConsumer consumer) {
     new AsyncClientScanner(setDefaultScanConfig(scan), consumer, tableName, conn, retryTimer,
-      pauseNs, maxAttempts, scanTimeoutNs, readRpcTimeoutNs, startLogErrorsCnt).start();
+      pauseNs, pauseForCQTBENs, maxAttempts, scanTimeoutNs, readRpcTimeoutNs, startLogErrorsCnt)
+        .start();
   }
 
   private long resultSize2CacheSize(long maxResultSize) {
@@ -509,7 +538,8 @@ class RawAsyncTableImpl implements AsyncTable<AdvancedScanResultConsumer> {
     return conn.callerFactory.batch().table(tableName).actions(actions)
       .operationTimeout(operationTimeoutNs, TimeUnit.NANOSECONDS)
       .rpcTimeout(rpcTimeoutNs, TimeUnit.NANOSECONDS).pause(pauseNs, TimeUnit.NANOSECONDS)
-      .maxAttempts(maxAttempts).startLogErrorsCnt(startLogErrorsCnt).call();
+      .pauseForCQTBE(pauseForCQTBENs, TimeUnit.NANOSECONDS).maxAttempts(maxAttempts)
+      .startLogErrorsCnt(startLogErrorsCnt).call();
   }
 
   @Override

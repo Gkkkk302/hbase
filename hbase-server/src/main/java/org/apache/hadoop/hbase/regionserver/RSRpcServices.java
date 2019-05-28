@@ -131,7 +131,9 @@ import org.apache.hadoop.hbase.replication.regionserver.RejectRequestsFromClient
 import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
+import org.apache.hadoop.hbase.security.access.NoopAccessChecker;
 import org.apache.hadoop.hbase.security.access.Permission;
+import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.DNS;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -144,6 +146,7 @@ import org.apache.hadoop.hbase.wal.WALKey;
 import org.apache.hadoop.hbase.wal.WALSplitter;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -344,12 +347,8 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
 
   final AtomicBoolean clearCompactionQueues = new AtomicBoolean(false);
 
-  // We want to vet all accesses at the point of entry itself; limiting scope of access checker
-  // instance to only this class to prevent its use from spreading deeper into implementation.
-  // Initialized in start() since AccessChecker needs ZKWatcher which is created by HRegionServer
-  // after RSRpcServices constructor and before start() is called.
-  // Initialized only if authorization is enabled, else remains null.
-  protected AccessChecker accessChecker;
+  private AccessChecker accessChecker;
+  private ZKPermissionWatcher zkPermissionWatcher;
 
   /**
    * Services launched in RSRpcServices. By default they are on but you can use the below
@@ -1482,15 +1481,26 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
 
   void start(ZKWatcher zkWatcher) {
     if (AccessChecker.isAuthorizationSupported(getConfiguration())) {
-      accessChecker = new AccessChecker(getConfiguration(), zkWatcher);
+      accessChecker = new AccessChecker(getConfiguration());
+    } else {
+      accessChecker = new NoopAccessChecker(getConfiguration());
+    }
+    if (!getConfiguration().getBoolean("hbase.testing.nocluster", false) && zkWatcher != null) {
+      zkPermissionWatcher =
+          new ZKPermissionWatcher(zkWatcher, accessChecker.getAuthManager(), getConfiguration());
+      try {
+        zkPermissionWatcher.start();
+      } catch (KeeperException e) {
+        LOG.error("ZooKeeper permission watcher initialization failed", e);
+      }
     }
     this.scannerIdGenerator = new ScannerIdGenerator(this.regionServer.serverName);
     rpcServer.start();
   }
 
   void stop() {
-    if (accessChecker != null) {
-      accessChecker.stop();
+    if (zkPermissionWatcher != null) {
+      zkPermissionWatcher.close();
     }
     closeAllScanners();
     rpcServer.stop();
@@ -3711,8 +3721,12 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
         regionServer.updateRegionFavoredNodesMapping(regionInfo.getEncodedName(),
           regionOpenInfo.getFavoredNodesList());
       }
-      regionServer.executorService.submit(AssignRegionHandler.create(regionServer, regionInfo,
-        regionOpenInfo.getOpenProcId(), tableDesc, masterSystemTime));
+      long procId = regionOpenInfo.getOpenProcId();
+      if (regionServer.submitRegionProcedure(procId)) {
+        regionServer.executorService.submit(AssignRegionHandler
+            .create(regionServer, regionInfo, procId, tableDesc,
+                masterSystemTime));
+      }
     }
   }
 
@@ -3723,11 +3737,14 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
     } catch (DoNotRetryIOException e) {
       throw new UncheckedIOException("Should not happen", e);
     }
-    ServerName destination =
-      request.hasDestinationServer() ? ProtobufUtil.toServerName(request.getDestinationServer())
-        : null;
-    regionServer.executorService.submit(UnassignRegionHandler.create(regionServer, encodedName,
-      request.getCloseProcId(), false, destination));
+    ServerName destination = request.hasDestinationServer() ?
+        ProtobufUtil.toServerName(request.getDestinationServer()) :
+        null;
+    long procId = request.getCloseProcId();
+    if (regionServer.submitRegionProcedure(procId)) {
+      regionServer.executorService.submit(UnassignRegionHandler
+          .create(regionServer, encodedName, procId, false, destination));
+    }
   }
 
   private void executeProcedures(RemoteProcedureRequest request) {
@@ -3776,5 +3793,13 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
   @VisibleForTesting
   public RpcScheduler getRpcScheduler() {
     return rpcServer.getScheduler();
+  }
+
+  protected AccessChecker getAccessChecker() {
+    return accessChecker;
+  }
+
+  protected ZKPermissionWatcher getZkPermissionWatcher() {
+    return zkPermissionWatcher;
   }
 }

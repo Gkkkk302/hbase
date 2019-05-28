@@ -645,8 +645,11 @@ which does not give any meaningful result.
 .Remote Clusters on different Kerberos Realms
 [NOTE]
 ====
-Currently, SyncTable can't be ran for remote clusters on different Kerberos realms.
-There's some work in progress to resolve this on link:https://jira.apache.org/jira/browse/HBASE-20586[HBASE-20586]
+Often, remote clusters may be deployed on different Kerberos Realms.
+link:https://jira.apache.org/jira/browse/HBASE-20586[HBASE-20586] added SyncTable support for
+cross realm authentication, allowing a SyncTable process running on target cluster to connect to
+source cluster and read both HashTable output files and the given HBase table when performing the
+required comparisons.
 ====
 
 [[export]]
@@ -838,7 +841,7 @@ $ bin/hbase org.apache.hadoop.hbase.tool.LoadIncrementalHFiles <hdfs://storefile
 
 .Driver
 ----
-HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase classpath` ${HADOOP_HOME}/bin/hadoop jar ${HBASE_HOME}/hbase-server-VERSION.jar completebulkload <hdfs://storefileoutput> <tablename>
+HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase classpath` ${HADOOP_HOME}/bin/hadoop jar ${HBASE_HOME}/hbase-mapreduce-VERSION.jar completebulkload <hdfs://storefileoutput> <tablename>
 ----
 
 [[completebulkload.warning]]
@@ -2519,6 +2522,7 @@ take when the quota subject's usage exceeds the `LIMIT`. The following are valid
 * `NO_INSERTS` - No new data may be written (e.g. `Put`, `Increment`, `Append`).
 * `NO_WRITES` - Same as `NO_INSERTS` but `Deletes` are also disallowed.
 * `NO_WRITES_COMPACTIONS` - Same as `NO_WRITES` but compactions are also disallowed.
+** This policy only prevents user-submitted compactions. System can still run compactions.
 * `DISABLE` - The table(s) are disabled, preventing all read/write access.
 
 .Setting simple space quotas

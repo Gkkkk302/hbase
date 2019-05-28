@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="https://maven.apache.org/POM/4.0.0" xmlns:xsi="https://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <!--
       /**
        * Licensed to the Apache Software Foundation (ASF) under one
@@ -132,8 +132,10 @@
                                 <shadeTestJar>false</shadeTestJar>
                                 <artifactSet>
                                     <excludes>
-                                        <!-- exclude J2EE modules that come in for JDK11+ -->
-                                        <exclude>javax.annotation:javax.annotation-api</exclude>
+                                        <!-- exclude J2EE modules that come in for JDK11+ (since
+                                             hadoop-3.2.0) or modules that come in for JDK8+ but
+                                             need not be included -->
+                                        <exclude>javax.activation:javax.activation-api</exclude>
                                         <!-- default to excluding Hadoop, have module that want
                                              to include it redefine the exclude list -->
                                         <exclude>org.apache.hadoop:*</exclude>
@@ -212,6 +214,11 @@
                                         <shadedPattern>${shaded.prefix}.com.zaxxer</shadedPattern>
                                     </relocation>
 
+                                    <!-- dnsjava -->
+                                    <relocation>
+                                        <pattern>org.xbill</pattern>
+                                        <shadedPattern>${shaded.prefix}.org.xbill</shadedPattern>
+                                    </relocation>
 
                                     <!-- netty family -->
                                     <relocation>
@@ -231,8 +238,12 @@
 
                                     <!-- top level org -->
                                     <relocation>
-                                        <pattern>org.codehaus</pattern>
-                                        <shadedPattern>${shaded.prefix}.org.codehaus</shadedPattern>
+                                      <pattern>org.checkerframework</pattern>
+                                      <shadedPattern>${shaded.prefix}.org.checkerframework</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                      <pattern>org.codehaus</pattern>
+                                      <shadedPattern>${shaded.prefix}.org.codehaus</shadedPattern>
                                     </relocation>
                                     <relocation>
                                         <pattern>org.eclipse</pattern>
@@ -420,6 +431,10 @@
                                         <pattern>org.apache.commons.codec</pattern>
                                         <shadedPattern>${shaded.prefix}.org.apache.commons.codec</shadedPattern>
                                     </relocation>
+                                    <relocation>
+                                        <pattern>org.apache.commons.text</pattern>
+                                        <shadedPattern>${shaded.prefix}.org.apache.commons.text</shadedPattern>
+                                    </relocation>
 
                                     <!-- top level net-->
                                     <relocation>
@@ -457,6 +472,16 @@
                                   </transformer>
                                 </transformers>
                                 <filters>
+                                    <!-- remove utility classes which are not required from dnsjava -->
+                                    <filter>
+                                        <artifact>dnsjava:dnsjava</artifact>
+                                        <excludes>
+                                            <exclude>dig*</exclude>
+                                            <exclude>jnamed*</exclude>
+                                            <exclude>lookup*</exclude>
+                                            <exclude>update*</exclude>
+                                        </excludes>
+                                    </filter>
                                   <filter>
                                     <!-- this is a signed osgi bundle -->
                                     <artifact>org.eclipse.jetty.orbit:javax.servlet.jsp.jstl</artifact>

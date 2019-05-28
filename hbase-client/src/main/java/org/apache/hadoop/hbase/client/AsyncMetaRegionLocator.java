@@ -23,10 +23,12 @@ import static org.apache.hadoop.hbase.client.AsyncRegionLocatorHelper.isGood;
 import static org.apache.hadoop.hbase.client.AsyncRegionLocatorHelper.removeRegionLocation;
 import static org.apache.hadoop.hbase.client.AsyncRegionLocatorHelper.replaceRegionLocation;
 
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.RegionLocations;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
@@ -106,10 +108,29 @@ class AsyncMetaRegionLocator {
 
   void updateCachedLocationOnError(HRegionLocation loc, Throwable exception) {
     AsyncRegionLocatorHelper.updateCachedLocationOnError(loc, exception, this::getCacheLocation,
-      this::addLocationToCache, this::removeLocationFromCache);
+      this::addLocationToCache, this::removeLocationFromCache, Optional.empty());
   }
 
   void clearCache() {
     metaRegionLocations.set(null);
+  }
+
+  void clearCache(ServerName serverName) {
+    for (;;) {
+      RegionLocations locs = metaRegionLocations.get();
+      if (locs == null) {
+        return;
+      }
+      RegionLocations newLocs = locs.removeByServer(serverName);
+      if (locs == newLocs) {
+        return;
+      }
+      if (newLocs.isEmpty()) {
+        newLocs = null;
+      }
+      if (metaRegionLocations.compareAndSet(locs, newLocs)) {
+        return;
+      }
+    }
   }
 }

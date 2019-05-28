@@ -233,6 +233,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListDecomm
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListDecommissionedRegionServersResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespaceDescriptorsRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespaceDescriptorsResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespacesRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespacesResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableDescriptorsByNamespaceRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableDescriptorsByNamespaceResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableNamesByNamespaceRequest;
@@ -916,7 +918,7 @@ public class MasterRpcServices extends RSRpcServices
           + desc.getSignature()));
       }
       LOG.info(master.getClientIdAuditPrefix() + " procedure request for: " + desc.getSignature());
-      mpm.checkPermissions(desc, accessChecker, RpcServer.getRequestUser().orElse(null));
+      mpm.checkPermissions(desc, getAccessChecker(), RpcServer.getRequestUser().orElse(null));
       mpm.execProcedure(desc);
       // send back the max amount of time the client should wait for the procedure
       // to complete
@@ -989,6 +991,19 @@ public class MasterRpcServices extends RSRpcServices
         builder.addSnapshots(snapshot);
       }
       return builder.build();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public ListNamespacesResponse listNamespaces(
+      RpcController controller, ListNamespacesRequest request)
+      throws ServiceException {
+    try {
+      return ListNamespacesResponse.newBuilder()
+        .addAllNamespaceName(master.listNamespaces())
+        .build();
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -2816,10 +2831,10 @@ public class MasterRpcServices extends RSRpcServices
         caller = new InputUser(userName, groups.toArray(new String[groups.size()]));
       }
       List<Boolean> hasUserPermissions = new ArrayList<>();
-      if (accessChecker != null) {
+      if (getAccessChecker() != null) {
         for (Permission permission : permissions) {
           boolean hasUserPermission =
-              accessChecker.hasUserPermission(caller, "hasUserPermissions", permission);
+              getAccessChecker().hasUserPermission(caller, "hasUserPermissions", permission);
           hasUserPermissions.add(hasUserPermission);
         }
       } else {

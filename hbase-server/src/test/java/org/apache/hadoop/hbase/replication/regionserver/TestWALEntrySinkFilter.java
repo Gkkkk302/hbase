@@ -61,7 +61,6 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
-import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
@@ -379,11 +378,6 @@ public class TestWALEntrySinkFilter {
             }
 
             @Override
-            public boolean checkAndPut(byte[] row, byte[] family, byte[] qualifier, CompareFilter.CompareOp compareOp, byte[] value, Put put) throws IOException {
-              return false;
-            }
-
-            @Override
             public boolean checkAndPut(byte[] row, byte[] family, byte[] qualifier, CompareOperator op, byte[] value, Put put) throws IOException {
               return false;
             }
@@ -400,11 +394,6 @@ public class TestWALEntrySinkFilter {
 
             @Override
             public boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier, byte[] value, Delete delete) throws IOException {
-              return false;
-            }
-
-            @Override
-            public boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier, CompareFilter.CompareOp compareOp, byte[] value, Delete delete) throws IOException {
               return false;
             }
 
@@ -474,11 +463,6 @@ public class TestWALEntrySinkFilter {
             }
 
             @Override
-            public boolean checkAndMutate(byte[] row, byte[] family, byte[] qualifier, CompareFilter.CompareOp compareOp, byte[] value, RowMutations mutation) throws IOException {
-              return false;
-            }
-
-            @Override
             public boolean checkAndMutate(byte[] row, byte[] family, byte[] qualifier, CompareOperator op, byte[] value, RowMutations mutation) throws IOException {
               return false;
             }
@@ -540,7 +524,11 @@ public class TestWALEntrySinkFilter {
 
             @Override
             public void setOperationTimeout(int operationTimeout) {
+            }
 
+            @Override
+            public RegionLocator getRegionLocator() throws IOException {
+              return null;
             }
           };
         }

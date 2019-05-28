@@ -51,6 +51,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
@@ -142,9 +143,12 @@ import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationLoad;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceInterface;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationStatus;
+import org.apache.hadoop.hbase.security.SecurityConstants;
 import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
+import org.apache.hadoop.hbase.security.access.AccessChecker;
+import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
 import org.apache.hadoop.hbase.trace.SpanReceiverHost;
 import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Addressing;
@@ -188,6 +192,8 @@ import sun.misc.SignalHandler;
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.base.Throwables;
+import org.apache.hbase.thirdparty.com.google.common.cache.Cache;
+import org.apache.hbase.thirdparty.com.google.common.cache.CacheBuilder;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.protobuf.BlockingRpcChannel;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
@@ -251,6 +257,18 @@ public class HRegionServer extends HasThread implements
   //false - if close region action in progress
   protected final ConcurrentMap<byte[], Boolean> regionsInTransitionInRS =
     new ConcurrentSkipListMap<>(Bytes.BYTES_COMPARATOR);
+
+  /**
+   * Used to cache the open/close region procedures which already submitted.
+   * See {@link #submitRegionProcedure(long)}.
+   */
+  private final ConcurrentMap<Long, Long> submittedRegionProcedures = new ConcurrentHashMap<>();
+  /**
+   * Used to cache the open/close region procedures which already executed.
+   * See {@link #submitRegionProcedure(long)}.
+   */
+  private final Cache<Long, Long> executedRegionProcedures =
+      CacheBuilder.newBuilder().expireAfterAccess(600, TimeUnit.SECONDS).build();
 
   // Cache flushing
   protected MemStoreFlusher cacheFlusher;
@@ -531,6 +549,12 @@ public class HRegionServer extends HasThread implements
   private final boolean masterless;
   static final String MASTERLESS_CONFIG_NAME = "hbase.masterless";
 
+  /**regionserver codec list **/
+  public static final String REGIONSERVER_CODEC = "hbase.regionserver.codecs";
+
+  // A timer to shutdown the process if abort takes too long
+  private Timer abortMonitor;
+
   /**
    * Starts a HRegionServer at the default location
    */
@@ -727,8 +751,8 @@ public class HRegionServer extends HasThread implements
   }
 
   protected void login(UserProvider user, String host) throws IOException {
-    user.login("hbase.regionserver.keytab.file",
-      "hbase.regionserver.kerberos.principal", host);
+    user.login(SecurityConstants.REGIONSERVER_KRB_KEYTAB_FILE,
+      SecurityConstants.REGIONSERVER_KRB_PRINCIPAL, host);
   }
 
 
@@ -817,7 +841,7 @@ public class HRegionServer extends HasThread implements
    */
   private static void checkCodecs(final Configuration c) throws IOException {
     // check to see if the codec list is available:
-    String [] codecs = c.getStrings("hbase.regionserver.codecs", (String[])null);
+    String [] codecs = c.getStrings(REGIONSERVER_CODEC, (String[])null);
     if (codecs == null) return;
     for (String codec : codecs) {
       if (!CompressionTest.testCompression(codec)) {
@@ -1038,21 +1062,6 @@ public class HRegionServer extends HasThread implements
       if (!rpcServices.checkOOME(t)) {
         String prefix = t instanceof YouAreDeadException? "": "Unhandled: ";
         abort(prefix + t.getMessage(), t);
-      }
-    }
-
-    if (abortRequested) {
-      Timer abortMonitor = new Timer("Abort regionserver monitor", true);
-      TimerTask abortTimeoutTask = null;
-      try {
-        abortTimeoutTask =
-            Class.forName(conf.get(ABORT_TIMEOUT_TASK, SystemExitWhenAbortTimeout.class.getName()))
-                .asSubclass(TimerTask.class).getDeclaredConstructor().newInstance();
-      } catch (Exception e) {
-        LOG.warn("Initialize abort timeout task failed", e);
-      }
-      if (abortTimeoutTask != null) {
-        abortMonitor.schedule(abortTimeoutTask, conf.getLong(ABORT_TIMEOUT, DEFAULT_ABORT_TIMEOUT));
       }
     }
 
@@ -2412,7 +2421,7 @@ public class HRegionServer extends HasThread implements
     } else {
       LOG.error(HBaseMarkers.FATAL, msg);
     }
-    this.abortRequested = true;
+    setAbortRequested();
     // HBASE-4014: show list of coprocessors that were loaded to help debug
     // regionserver crashes.Note that we're implicitly using
     // java.util.HashSet's toString() method to print the coprocessor names.
@@ -2442,8 +2451,14 @@ public class HRegionServer extends HasThread implements
     } catch (Throwable t) {
       LOG.warn("Unable to report fatal error to master", t);
     }
+
+    scheduleAbortTimer();
     // shutdown should be run as the internal user
     stop(reason, true, null);
+  }
+
+  protected final void setAbortRequested() {
+    this.abortRequested = true;
   }
 
   /**
@@ -2473,6 +2488,24 @@ public class HRegionServer extends HasThread implements
    * Called on stop/abort before closing the cluster connection and meta locator.
    */
   protected void sendShutdownInterrupt() {
+  }
+
+  // Limits the time spent in the shutdown process.
+  private void scheduleAbortTimer() {
+    if (this.abortMonitor == null) {
+      this.abortMonitor = new Timer("Abort regionserver monitor", true);
+      TimerTask abortTimeoutTask = null;
+      try {
+        abortTimeoutTask =
+          Class.forName(conf.get(ABORT_TIMEOUT_TASK, SystemExitWhenAbortTimeout.class.getName()))
+            .asSubclass(TimerTask.class).getDeclaredConstructor().newInstance();
+      } catch (Exception e) {
+        LOG.warn("Initialize abort timeout task failed", e);
+      }
+      if (abortTimeoutTask != null) {
+        abortMonitor.schedule(abortTimeoutTask, conf.getLong(ABORT_TIMEOUT, DEFAULT_ABORT_TIMEOUT));
+      }
+    }
   }
 
   /**
@@ -3660,6 +3693,16 @@ public class HRegionServer extends HasThread implements
     return Optional.ofNullable(this.mobFileCache);
   }
 
+  @Override
+  public AccessChecker getAccessChecker() {
+    return rpcServices.getAccessChecker();
+  }
+
+  @Override
+  public ZKPermissionWatcher getZKPermissionWatcher() {
+    return rpcServices.getZkPermissionWatcher();
+  }
+
   /**
    * @return : Returns the ConfigurationManager object for testing purposes.
    */
@@ -3748,6 +3791,11 @@ public class HRegionServer extends HasThread implements
       old.stop("configuration change");
     }
     this.flushThroughputController = FlushThroughputControllerFactory.create(this, newConf);
+    try {
+      Superusers.initialize(newConf);
+    } catch (IOException e) {
+      LOG.warn("Failed to initialize SuperUsers on reloading of the configuration");
+    }
   }
 
   @Override
@@ -3847,6 +3895,51 @@ public class HRegionServer extends HasThread implements
       }
       throw ProtobufUtil.getRemoteException(se);
     }
+  }
+
+  /**
+   * Will ignore the open/close region procedures which already submitted or executed.
+   *
+   * When master had unfinished open/close region procedure and restarted, new active master may
+   * send duplicate open/close region request to regionserver. The open/close request is submitted
+   * to a thread pool and execute. So first need a cache for submitted open/close region procedures.
+   *
+   * After the open/close region request executed and report region transition succeed, cache it in
+   * executed region procedures cache. See {@link #finishRegionProcedure(long)}. After report region
+   * transition succeed, master will not send the open/close region request to regionserver again.
+   * And we thought that the ongoing duplicate open/close region request should not be delayed more
+   * than 600 seconds. So the executed region procedures cache will expire after 600 seconds.
+   *
+   * See HBASE-22404 for more details.
+   *
+   * @param procId the id of the open/close region procedure
+   * @return true if the procedure can be submitted.
+   */
+  boolean submitRegionProcedure(long procId) {
+    if (procId == -1) {
+      return true;
+    }
+    // Ignore the region procedures which already submitted.
+    Long previous = submittedRegionProcedures.putIfAbsent(procId, procId);
+    if (previous != null) {
+      LOG.warn("Received procedure pid={}, which already submitted, just ignore it", procId);
+      return false;
+    }
+    // Ignore the region procedures which already executed.
+    if (executedRegionProcedures.getIfPresent(procId) != null) {
+      LOG.warn("Received procedure pid={}, which already executed, just ignore it", procId);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * See {@link #submitRegionProcedure(long)}.
+   * @param procId the id of the open/close region procedure
+   */
+  public void finishRegionProcedure(long procId) {
+    executedRegionProcedures.put(procId, procId);
+    submittedRegionProcedures.remove(procId);
   }
 
   public boolean isShutDown() {

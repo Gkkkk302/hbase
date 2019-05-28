@@ -30,7 +30,7 @@ pipeline {
     skipDefaultCheckout()
   }
   environment {
-    YETUS_RELEASE = '0.7.0'
+    YETUS_RELEASE = '0.9.0'
     // where we'll write everything from different steps. Need a copy here so the final step can check for success/failure.
     OUTPUT_DIR_RELATIVE_GENERAL = 'output-general'
     OUTPUT_DIR_RELATIVE_JDK7 = 'output-jdk7'
@@ -86,7 +86,7 @@ pipeline {
                       --working-dir "${WORKSPACE}/downloads-yetus" \
                       --keys 'https://www.apache.org/dist/yetus/KEYS' \
                       "${WORKSPACE}/yetus-${YETUS_RELEASE}-bin.tar.gz" \
-                      "yetus/${YETUS_RELEASE}/yetus-${YETUS_RELEASE}-bin.tar.gz"
+                      "yetus/${YETUS_RELEASE}/apache-yetus-${YETUS_RELEASE}-bin.tar.gz"
                   mv "yetus-${YETUS_RELEASE}-bin.tar.gz" yetus.tar.gz
                 else
                   echo "Reusing cached install of Apache Yetus version ${YETUS_RELEASE}."
@@ -116,7 +116,7 @@ pipeline {
         }
         stage ('hadoop 2 cache') {
           environment {
-            HADOOP2_VERSION="2.7.1"
+            HADOOP2_VERSION="2.8.2"
           }
           steps {
             // directory must be unique for each parallel stage, because jenkins runs them in the same workspace :(
@@ -139,7 +139,7 @@ pipeline {
         }
         stage ('hadoop 3 cache') {
           environment {
-            HADOOP3_VERSION="3.0.0"
+            HADOOP3_VERSION="3.0.3"
           }
           steps {
             // directory must be unique for each parallel stage, because jenkins runs them in the same workspace :(

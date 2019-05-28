@@ -118,7 +118,6 @@ import org.apache.hadoop.hbase.exceptions.FailedSanityCheckException;
 import org.apache.hadoop.hbase.filter.BigDecimalComparator;
 import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.filter.ColumnCountGetFilter;
-import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterBase;
 import org.apache.hadoop.hbase.filter.FilterList;
@@ -1451,7 +1450,7 @@ public class TestHRegion {
     allFilters.addFilter(new PrefixFilter(Bytes.toBytes(keyPrefix)));
     // Only return rows where this column value exists in the row.
     SingleColumnValueFilter filter = new SingleColumnValueFilter(Bytes.toBytes("trans-tags"),
-        Bytes.toBytes("qual2"), CompareOp.EQUAL, Bytes.toBytes(value));
+        Bytes.toBytes("qual2"), CompareOperator.EQUAL, Bytes.toBytes(value));
     filter.setFilterIfMissing(true);
     allFilters.addFilter(filter);
     Scan scan = new Scan();
@@ -2633,12 +2632,12 @@ public class TestHRegion {
     region.put(put);
 
     Get get = new Get(row1);
-    get.setMaxVersions();
+    get.readAllVersions();
     Result res = region.get(get);
     // Get 3 versions, the oldest version has gone from user view
     assertEquals(maxVersions, res.size());
 
-    get.setFilter(new ValueFilter(CompareOp.EQUAL, new SubstringComparator("value")));
+    get.setFilter(new ValueFilter(CompareOperator.EQUAL, new SubstringComparator("value")));
     res = region.get(get);
     // When use value filter, the oldest version should still gone from user view and it
     // should only return one key vaule
@@ -3282,7 +3281,7 @@ public class TestHRegion {
 
     Scan scan = new Scan();
     Filter filter = new SingleColumnValueExcludeFilter(cf_essential, col_normal,
-        CompareOp.NOT_EQUAL, filtered_val);
+            CompareOperator.NOT_EQUAL, filtered_val);
     scan.setFilter(filter);
     scan.setLoadColumnFamiliesOnDemand(true);
     InternalScanner s = region.getScanner(scan);
@@ -3442,7 +3441,7 @@ public class TestHRegion {
 
       Scan scan = new Scan();
       scan.addFamily(family);
-      scan.setFilter(new SingleColumnValueFilter(family, qual1, CompareOp.EQUAL,
+      scan.setFilter(new SingleColumnValueFilter(family, qual1, CompareOperator.EQUAL,
           new BinaryComparator(Bytes.toBytes(5L))));
 
       int expectedCount = 0;
@@ -3881,9 +3880,9 @@ public class TestHRegion {
     Scan idxScan = new Scan();
     idxScan.addFamily(family);
     idxScan.setFilter(new FilterList(FilterList.Operator.MUST_PASS_ALL, Arrays.<Filter> asList(
-        new SingleColumnValueFilter(family, qual1, CompareOp.GREATER_OR_EQUAL,
+        new SingleColumnValueFilter(family, qual1, CompareOperator.GREATER_OR_EQUAL,
             new BinaryComparator(Bytes.toBytes(0L))), new SingleColumnValueFilter(family, qual1,
-            CompareOp.LESS_OR_EQUAL, new BinaryComparator(Bytes.toBytes(3L))))));
+                    CompareOperator.LESS_OR_EQUAL, new BinaryComparator(Bytes.toBytes(3L))))));
     InternalScanner scanner = region.getScanner(idxScan);
     List<Cell> res = new ArrayList<>();
 
@@ -3977,7 +3976,7 @@ public class TestHRegion {
 
     // Get rows
     Get get = new Get(row);
-    get.setMaxVersions();
+    get.readAllVersions();
     Cell[] kvs = region.get(get).rawCells();
 
     // Check if rows are correct
@@ -4260,7 +4259,7 @@ public class TestHRegion {
 
     Get get = new Get(Incrementer.incRow);
     get.addColumn(Incrementer.family, Incrementer.qualifier);
-    get.setMaxVersions(1);
+    get.readVersions(1);
     Result res = this.region.get(get);
     List<Cell> kvs = res.getColumnCells(Incrementer.family, Incrementer.qualifier);
 
@@ -4350,7 +4349,7 @@ public class TestHRegion {
 
     Get get = new Get(Appender.appendRow);
     get.addColumn(Appender.family, Appender.qualifier);
-    get.setMaxVersions(1);
+    get.readVersions(1);
     Result res = this.region.get(get);
     List<Cell> kvs = res.getColumnCells(Appender.family, Appender.qualifier);
 
@@ -4384,7 +4383,7 @@ public class TestHRegion {
     region.put(put);
     get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setMaxVersions();
+    get.readAllVersions();
     res = this.region.get(get);
     kvs = res.getColumnCells(family, qualifier);
     assertEquals(1, kvs.size());
@@ -4393,7 +4392,7 @@ public class TestHRegion {
     region.flush(true);
     get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setMaxVersions();
+    get.readAllVersions();
     res = this.region.get(get);
     kvs = res.getColumnCells(family, qualifier);
     assertEquals(1, kvs.size());
@@ -4405,7 +4404,7 @@ public class TestHRegion {
     region.put(put);
     get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setMaxVersions();
+    get.readAllVersions();
     res = this.region.get(get);
     kvs = res.getColumnCells(family, qualifier);
     assertEquals(1, kvs.size());
@@ -4414,7 +4413,7 @@ public class TestHRegion {
     region.flush(true);
     get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setMaxVersions();
+    get.readAllVersions();
     res = this.region.get(get);
     kvs = res.getColumnCells(family, qualifier);
     assertEquals(1, kvs.size());
@@ -4735,7 +4734,7 @@ public class TestHRegion {
 
   static void assertGet(final HRegion r, final byte[] family, final byte[] k) throws IOException {
     // Now I have k, get values out and assert they are as expected.
-    Get get = new Get(k).addFamily(family).setMaxVersions();
+    Get get = new Get(k).addFamily(family).readAllVersions();
     Cell[] results = r.get(get).rawCells();
     for (int j = 0; j < results.length; j++) {
       byte[] tmp = CellUtil.cloneValue(results[j]);

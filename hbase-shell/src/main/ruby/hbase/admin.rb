@@ -189,7 +189,7 @@ module Hbase
     # Requests a cluster balance
     # Returns true if balancer ran
     def balancer(force)
-      @admin.balancer(java.lang.Boolean.valueOf(force))
+      @admin.balance(java.lang.Boolean.valueOf(force))
     end
 
     #----------------------------------------------------------------------------------------------
@@ -817,7 +817,7 @@ module Hbase
                            r_load_sink.getAgeOfLastAppliedOp.to_s
           r_sink_string << ', TimeStampsOfLastAppliedOp=' +
                            java.util.Date.new(r_load_sink
-                             .getTimeStampsOfLastAppliedOp).toString
+                             .getTimestampsOfLastAppliedOp).toString
           r_load_source_map = sl.getReplicationLoadSourceMap
           build_source_string(r_load_source_map, r_source_string)
           puts(format('    %<host>s:', host: server_status.getHostname))
@@ -1244,7 +1244,7 @@ module Hbase
     # Returns a list of namespaces in hbase
     def list_namespace(regex = '.*')
       pattern = java.util.regex.Pattern.compile(regex)
-      list = @admin.listNamespaceDescriptors.map(&:getName)
+      list = @admin.listNamespaces
       list.select { |s| pattern.match(s) }
     end
 

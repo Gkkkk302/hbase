@@ -18,30 +18,27 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
+import com.google.protobuf.Service;
+import com.google.protobuf.ServiceException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-
 import org.apache.commons.lang3.NotImplementedException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.io.TimeRange;
-import org.apache.yetus.audience.InterfaceAudience;
-
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
-import org.apache.hadoop.hbase.filter.CompareFilter;
+import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
 import org.apache.hadoop.hbase.util.Bytes;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.Message;
-import com.google.protobuf.Service;
-import com.google.protobuf.ServiceException;
+import org.apache.yetus.audience.InterfaceAudience;
 
 /**
  * Used to communicate with a single HBase table.
@@ -91,6 +88,11 @@ public interface Table extends Closeable {
    * @throws java.io.IOException if a remote or network exception occurs.
    */
   TableDescriptor getDescriptor() throws IOException;
+
+  /**
+   * Gets the {@link RegionLocator} for this table.
+   */
+  RegionLocator getRegionLocator() throws IOException;
 
   /**
    * Test for the existence of columns in the table, as specified by the Get.
@@ -315,35 +317,6 @@ public interface Table extends Closeable {
    * @param row to check
    * @param family column family to check
    * @param qualifier column qualifier to check
-   * @param compareOp comparison operator to use
-   * @param value the expected value
-   * @param put data to put if check succeeds
-   * @throws IOException e
-   * @return true if the new put was executed, false otherwise
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #checkAndMutate(byte[], byte[])}
-   */
-  @Deprecated
-  default boolean checkAndPut(byte[] row, byte[] family, byte[] qualifier,
-      CompareFilter.CompareOp compareOp, byte[] value, Put put) throws IOException {
-    RowMutations mutations = new RowMutations(put.getRow(), 1);
-    mutations.add(put);
-
-    return checkAndMutate(row, family, qualifier, compareOp, value, mutations);
-  }
-
-  /**
-   * Atomically checks if a row/family/qualifier value matches the expected
-   * value. If it does, it adds the put.  If the passed value is null, the check
-   * is for the lack of column (ie: non-existence)
-   *
-   * The expected value argument of this call is on the left and the current
-   * value of the cell is on the right side of the comparison operator.
-   *
-   * Ie. eg. GREATER operator means expected value > existing <=> add the put.
-   *
-   * @param row to check
-   * @param family column family to check
-   * @param qualifier column qualifier to check
    * @param op comparison operator to use
    * @param value the expected value
    * @param put data to put if check succeeds
@@ -416,35 +389,6 @@ public interface Table extends Closeable {
   default boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier,
     byte[] value, Delete delete) throws IOException {
     return checkAndDelete(row, family, qualifier, CompareOperator.EQUAL, value, delete);
-  }
-
-  /**
-   * Atomically checks if a row/family/qualifier value matches the expected
-   * value. If it does, it adds the delete.  If the passed value is null, the
-   * check is for the lack of column (ie: non-existence)
-   *
-   * The expected value argument of this call is on the left and the current
-   * value of the cell is on the right side of the comparison operator.
-   *
-   * Ie. eg. GREATER operator means expected value > existing <=> add the delete.
-   *
-   * @param row to check
-   * @param family column family to check
-   * @param qualifier column qualifier to check
-   * @param compareOp comparison operator to use
-   * @param value the expected value
-   * @param delete data to delete if check succeeds
-   * @throws IOException e
-   * @return true if the new delete was executed, false otherwise
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #checkAndMutate(byte[], byte[])}
-   */
-  @Deprecated
-  default boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier,
-    CompareFilter.CompareOp compareOp, byte[] value, Delete delete) throws IOException {
-    RowMutations mutations = new RowMutations(delete.getRow(), 1);
-    mutations.add(delete);
-
-    return checkAndMutate(row, family, qualifier, compareOp, value, mutations);
   }
 
   /**
@@ -784,32 +728,6 @@ public interface Table extends Closeable {
       Descriptors.MethodDescriptor methodDescriptor, Message request, byte[] startKey,
       byte[] endKey, R responsePrototype, Batch.Callback<R> callback)
       throws ServiceException, Throwable {
-    throw new NotImplementedException("Add an implementation!");
-  }
-
-  /**
-   * Atomically checks if a row/family/qualifier value matches the expected value.
-   * If it does, it performs the row mutations.  If the passed value is null, the check
-   * is for the lack of column (ie: non-existence)
-   *
-   * The expected value argument of this call is on the left and the current
-   * value of the cell is on the right side of the comparison operator.
-   *
-   * Ie. eg. GREATER operator means expected value > existing <=> perform row mutations.
-   *
-   * @param row to check
-   * @param family column family to check
-   * @param qualifier column qualifier to check
-   * @param compareOp the comparison operator
-   * @param value the expected value
-   * @param mutation  mutations to perform if check succeeds
-   * @throws IOException e
-   * @return true if the new put was executed, false otherwise
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #checkAndMutate(byte[], byte[])}
-   */
-  @Deprecated
-  default boolean checkAndMutate(byte[] row, byte[] family, byte[] qualifier,
-      CompareFilter.CompareOp compareOp, byte[] value, RowMutations mutation) throws IOException {
     throw new NotImplementedException("Add an implementation!");
   }
 
