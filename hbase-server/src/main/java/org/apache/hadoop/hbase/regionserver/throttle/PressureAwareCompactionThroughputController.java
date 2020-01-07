@@ -49,13 +49,13 @@ public class PressureAwareCompactionThroughputController extends PressureAwareTh
       "hbase.hstore.compaction.throughput.higher.bound";
 
   private static final long DEFAULT_HBASE_HSTORE_COMPACTION_MAX_THROUGHPUT_HIGHER_BOUND =
-      20L * 1024 * 1024;
+      100L * 1024 * 1024;
 
   public static final String HBASE_HSTORE_COMPACTION_MAX_THROUGHPUT_LOWER_BOUND =
       "hbase.hstore.compaction.throughput.lower.bound";
 
   private static final long DEFAULT_HBASE_HSTORE_COMPACTION_MAX_THROUGHPUT_LOWER_BOUND =
-      10L * 1024 * 1024;
+      50L * 1024 * 1024;
 
   public static final String HBASE_HSTORE_COMPACTION_MAX_THROUGHPUT_OFFPEAK =
       "hbase.hstore.compaction.throughput.offpeak";
@@ -145,14 +145,5 @@ public class PressureAwareCompactionThroughputController extends PressureAwareTh
     return "DefaultCompactionThroughputController [maxThroughput="
         + throughputDesc(getMaxThroughput()) + ", activeCompactions=" + activeOperations.size()
         + "]";
-  }
-
-  @Override
-  protected boolean skipControl(long deltaSize, long controlSize) {
-    if (deltaSize < controlSize) {
-      return true;
-    } else {
-      return false;
-    }
   }
 }

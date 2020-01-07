@@ -140,6 +140,11 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
+  public List<TableDescriptor> listTableDescriptors(boolean includeSysTables) throws IOException {
+    return listTableDescriptors(null, includeSysTables);
+  }
+
+  @Override
   public List<TableDescriptor> listTableDescriptors(Pattern pattern) throws IOException {
     return listTableDescriptors(pattern, false);
   }
@@ -720,6 +725,11 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
+  public List<RegionMetrics> getRegionMetrics(ServerName serverName) {
+    throw new NotImplementedException("getRegionMetrics not supported in ThriftAdmin");
+  }
+
+  @Override
   public List<RegionMetrics> getRegionMetrics(ServerName serverName, TableName tableName) {
     throw new NotImplementedException("getRegionMetrics not supported in ThriftAdmin");
   }
@@ -1127,14 +1137,24 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
-  public List<UserPermission>
-      getUserPermissions(GetUserPermissionsRequest getUserPermissionsRequest) {
+  public List<UserPermission> getUserPermissions(
+      GetUserPermissionsRequest getUserPermissionsRequest) {
     throw new NotImplementedException("getUserPermissions not supported in ThriftAdmin");
   }
 
   @Override
   public List<Boolean> hasUserPermissions(String userName, List<Permission> permissions) {
     throw new NotImplementedException("hasUserPermissions not supported in ThriftAdmin");
+  }
+
+  @Override
+  public boolean snapshotCleanupSwitch(boolean on, boolean synchronous) {
+    throw new NotImplementedException("snapshotCleanupSwitch not supported in ThriftAdmin");
+  }
+
+  @Override
+  public boolean isSnapshotCleanupEnabled() {
+    throw new NotImplementedException("isSnapshotCleanupEnabled not supported in ThriftAdmin");
   }
 
   @Override

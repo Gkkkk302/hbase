@@ -29,7 +29,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
@@ -41,11 +40,11 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.ConnectionUtils;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
@@ -144,7 +143,7 @@ public class TestThriftConnection {
 
   private static Connection createConnection(int port, boolean useHttp) throws IOException {
     Configuration conf = HBaseConfiguration.create(TEST_UTIL.getConfiguration());
-    conf.set(ClusterConnection.HBASE_CLIENT_CONNECTION_IMPL,
+    conf.set(ConnectionUtils.HBASE_CLIENT_CONNECTION_IMPL,
         ThriftConnection.class.getName());
     if (useHttp) {
       conf.set(Constants.HBASE_THRIFT_CLIENT_BUIDLER_CLASS,
@@ -169,7 +168,7 @@ public class TestThriftConnection {
     httpPort = HBaseTestingUtility.randomFreePort();
     // Start a thrift server
     thriftServer = startThriftServer(thriftPort, false);
-    // Start a HTTP thrift server
+    // Start an HTTP thrift server
     thriftHttpServer = startThriftServer(httpPort, true);
     thriftConnection = createConnection(thriftPort, false);
     thriftHttpConnection = createConnection(httpPort, true);
@@ -614,7 +613,7 @@ public class TestThriftConnection {
       assertTrue(Bytes.equals(VALUE_1, value1));
       assertNull(value2);
       assertTrue(table.exists(get));
-      assertEquals(1, table.existsAll(Collections.singletonList(get)).length);
+      assertEquals(1, table.exists(Collections.singletonList(get)).length);
       Delete delete = new Delete(ROW_1);
 
       table.checkAndMutate(ROW_1, FAMILYA).qualifier(QUALIFIER_1)

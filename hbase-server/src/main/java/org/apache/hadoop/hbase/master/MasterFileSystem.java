@@ -42,6 +42,7 @@ import org.apache.hadoop.hbase.mob.MobConstants;
 import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.replication.ReplicationUtils;
+import org.apache.hadoop.hbase.security.access.SnapshotScannerHDFSAclHelper;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -221,7 +222,7 @@ public class MasterFileSystem {
    * @return the directory for a give {@code region}.
    */
   public Path getRegionDir(RegionInfo region) {
-    return FSUtils.getRegionDir(FSUtils.getTableDir(getRootDir(), region.getTable()), region);
+    return FSUtils.getRegionDirFromRootDir(getRootDir(), region);
   }
 
   /**
@@ -274,9 +275,7 @@ public class MasterFileSystem {
     } catch (DeserializationException de) {
       LOG.error(HBaseMarkers.FATAL, "Please fix invalid configuration for "
         + HConstants.HBASE_DIR, de);
-      IOException ioe = new IOException();
-      ioe.initCause(de);
-      throw ioe;
+      throw new IOException(de);
     } catch (IllegalArgumentException iae) {
       LOG.error(HBaseMarkers.FATAL, "Please fix invalid configuration for "
         + HConstants.HBASE_DIR + " " + rd.toString(), iae);
@@ -318,20 +317,26 @@ public class MasterFileSystem {
       for (Path tableDir: FSUtils.getTableDirs(fs, tmpdir)) {
         HFileArchiver.archiveRegions(c, fs, this.rootdir, tableDir,
           FSUtils.getRegionDirs(fs, tableDir));
+        if (!FSUtils.getRegionDirs(fs, tableDir).isEmpty()) {
+          LOG.warn("Found regions in tmp dir after archiving table regions, {}", tableDir);
+        }
       }
-      if (!fs.delete(tmpdir, true)) {
+      // if acl sync to hdfs is enabled, then skip delete tmp dir because ACLs are set
+      if (!SnapshotScannerHDFSAclHelper.isAclSyncToHdfsEnabled(c) && !fs.delete(tmpdir, true)) {
         throw new IOException("Unable to clean the temp directory: " + tmpdir);
       }
     }
 
     // Create the temp directory
-    if (isSecurityEnabled) {
-      if (!fs.mkdirs(tmpdir, secureRootSubDirPerms)) {
-        throw new IOException("HBase temp directory '" + tmpdir + "' creation failure.");
-      }
-    } else {
-      if (!fs.mkdirs(tmpdir)) {
-        throw new IOException("HBase temp directory '" + tmpdir + "' creation failure.");
+    if (!fs.exists(tmpdir)) {
+      if (isSecurityEnabled) {
+        if (!fs.mkdirs(tmpdir, secureRootSubDirPerms)) {
+          throw new IOException("HBase temp directory '" + tmpdir + "' creation failure.");
+        }
+      } else {
+        if (!fs.mkdirs(tmpdir)) {
+          throw new IOException("HBase temp directory '" + tmpdir + "' creation failure.");
+        }
       }
     }
   }

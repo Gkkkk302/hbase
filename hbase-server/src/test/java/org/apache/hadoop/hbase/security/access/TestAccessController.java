@@ -68,6 +68,7 @@ import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -124,7 +125,7 @@ import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.access.Permission.Action;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.SecurityTests;
-import org.apache.hadoop.hbase.tool.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.apache.hadoop.hbase.util.Threads;
@@ -623,7 +624,7 @@ public class TestAccessController extends SecureTestUtil {
       regions = locator.getAllRegionLocations();
     }
     HRegionLocation location = regions.get(0);
-    final HRegionInfo hri = location.getRegionInfo();
+    final RegionInfo hri = location.getRegion();
     final ServerName server = location.getServerName();
     AccessTestAction action = new AccessTestAction() {
       @Override
@@ -646,7 +647,7 @@ public class TestAccessController extends SecureTestUtil {
       regions = locator.getAllRegionLocations();
     }
     HRegionLocation location = regions.get(0);
-    final HRegionInfo hri = location.getRegionInfo();
+    final RegionInfo hri = location.getRegion();
     AccessTestAction action = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
@@ -667,7 +668,7 @@ public class TestAccessController extends SecureTestUtil {
       regions = locator.getAllRegionLocations();
     }
     HRegionLocation location = regions.get(0);
-    final HRegionInfo hri = location.getRegionInfo();
+    final RegionInfo hri = location.getRegion();
     AccessTestAction action = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
@@ -688,7 +689,7 @@ public class TestAccessController extends SecureTestUtil {
       regions = locator.getAllRegionLocations();
     }
     HRegionLocation location = regions.get(0);
-    final HRegionInfo hri = location.getRegionInfo();
+    final RegionInfo hri = location.getRegion();
     AccessTestAction action = new AccessTestAction() {
       @Override
       public Object run() throws Exception {
@@ -1111,14 +1112,8 @@ public class TestAccessController extends SecureTestUtil {
     }
 
     private void bulkLoadHFile(TableName tableName) throws Exception {
-      try (Connection conn = ConnectionFactory.createConnection(conf);
-          Admin admin = conn.getAdmin();
-          RegionLocator locator = conn.getRegionLocator(tableName);
-          Table table = conn.getTable(tableName)) {
-        TEST_UTIL.waitUntilAllRegionsAssigned(tableName);
-        LoadIncrementalHFiles loader = new LoadIncrementalHFiles(conf);
-        loader.doBulkLoad(loadPath, admin, table, locator);
-      }
+      TEST_UTIL.waitUntilAllRegionsAssigned(tableName);
+      BulkLoadHFiles.create(conf).bulkLoad(tableName, loadPath);
     }
 
     private static void setPermission(FileSystem fs, Path dir, FsPermission perm)
@@ -2131,7 +2126,7 @@ public class TestAccessController extends SecureTestUtil {
       regions = locator.getAllRegionLocations();
     }
     HRegionLocation location = regions.get(0);
-    final HRegionInfo hri = location.getRegionInfo();
+    final RegionInfo hri = location.getRegion();
     final ServerName server = location.getServerName();
     try (Table table = systemUserConnection.getTable(TEST_TABLE2)) {
       AccessTestAction moveAction = new AccessTestAction() {
@@ -3180,7 +3175,7 @@ public class TestAccessController extends SecureTestUtil {
     verifyDenied(action, USER_CREATE, USER_RW, USER_RO, USER_NONE, USER_OWNER, USER_ADMIN);
   }
 
-  @Test(timeout = 180000)
+  @Test
   public void testGetUserPermissions() throws Throwable {
     Connection conn = null;
     try {
@@ -3308,7 +3303,7 @@ public class TestAccessController extends SecureTestUtil {
     }
   }
 
-  @Test(timeout = 180000)
+  @Test
   public void testHasPermission() throws Throwable {
     Connection conn = null;
     try {

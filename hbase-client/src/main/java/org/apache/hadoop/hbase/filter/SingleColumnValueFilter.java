@@ -138,15 +138,6 @@ public class SingleColumnValueFilter extends FilterBase {
     this.latestVersionOnly = latestVersionOnly;
   }
 
-  /**
-   * @return operator
-   * @deprecated  since 2.0.0. Will be removed in 3.0.0. Use {@link #getCompareOperator()} instead.
-   */
-  @Deprecated
-  public CompareOperator getOperator() {
-    return CompareOperator.valueOf(op.name());
-  }
-
   public CompareOperator getCompareOperator() {
     return op;
   }
@@ -176,12 +167,6 @@ public class SingleColumnValueFilter extends FilterBase {
   public boolean filterRowKey(Cell cell) throws IOException {
     // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
     return false;
-  }
-
-  @Deprecated
-  @Override
-  public ReturnCode filterKeyValue(final Cell c) {
-    return filterCell(c);
   }
 
   @Override

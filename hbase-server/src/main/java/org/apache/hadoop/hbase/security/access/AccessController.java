@@ -135,7 +135,7 @@ import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hbase.thirdparty.com.google.common.collect.ListMultimap;
@@ -716,11 +716,9 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
       }
     }
 
-    if (zkPermissionWatcher == null) {
-      throw new NullPointerException("ZKPermissionWatcher is null");
-    } else if (accessChecker == null) {
-      throw new NullPointerException("AccessChecker is null");
-    }
+    Preconditions.checkState(zkPermissionWatcher != null, "ZKPermissionWatcher is null");
+    Preconditions.checkState(accessChecker != null, "AccessChecker is null");
+
     // set the user-provider.
     this.userProvider = UserProvider.instantiate(env.getConfiguration());
     tableAcls = new MapMaker().weakValues().makeMap();
@@ -1089,7 +1087,8 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
       throws IOException {
     User user = getActiveUser(ctx);
     if (SnapshotDescriptionUtils.isSnapshotOwner(snapshot, user)
-        && hTableDescriptor.getTableName().getNameAsString().equals(snapshot.getTable())) {
+        && hTableDescriptor.getTableName().getNameAsString()
+        .equals(snapshot.getTableNameAsString())) {
       // Snapshot owner is allowed to create a table with the same name as the snapshot he took
       AuthResult result = AuthResult.allow("cloneSnapshot " + snapshot.getName(),
         "Snapshot owner check allowed", user, null, hTableDescriptor.getTableName(), null);
@@ -1981,7 +1980,10 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   /* ---- Protobuf AccessControlService implementation ---- */
 
   /**
-   * @deprecated Use {@link Admin#grant(UserPermission, boolean)} instead.
+   * @deprecated since 2.2.0 and will be removed in 4.0.0. Use
+   *   {@link Admin#grant(UserPermission, boolean)} instead.
+   * @see Admin#grant(UserPermission, boolean)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21739">HBASE-21739</a>
    */
   @Deprecated
   @Override
@@ -2024,7 +2026,10 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   }
 
   /**
-   * @deprecated Use {@link Admin#revoke(UserPermission)} instead.
+   * @deprecated since 2.2.0 and will be removed in 4.0.0. Use {@link Admin#revoke(UserPermission)}
+   *   instead.
+   * @see Admin#revoke(UserPermission)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21739">HBASE-21739</a>
    */
   @Deprecated
   @Override
@@ -2064,7 +2069,10 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   }
 
   /**
-   * @deprecated Use {@link Admin#getUserPermissions(GetUserPermissionsRequest)} instead.
+   * @deprecated since 2.2.0 and will be removed in 4.0.0. Use
+   *   {@link Admin#getUserPermissions(GetUserPermissionsRequest)} instead.
+   * @see Admin#getUserPermissions(GetUserPermissionsRequest)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21911">HBASE-21911</a>
    */
   @Deprecated
   @Override
@@ -2115,7 +2123,10 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   }
 
   /**
-   * @deprecated Use {@link Admin#hasUserPermissions(List)} instead.
+   * @deprecated since 2.2.0 and will be removed 4.0.0. Use {@link Admin#hasUserPermissions(List)}
+   *   instead.
+   * @see Admin#hasUserPermissions(List)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-22117">HBASE-22117</a>
    */
   @Deprecated
   @Override
@@ -2219,15 +2230,14 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
     if (regex == null && tableNamesList != null && !tableNamesList.isEmpty()) {
       // Otherwise, if the requestor has ADMIN or CREATE privs for all listed tables, the
       // request can be granted.
-      TableName [] sns = null;
       try (Admin admin = ctx.getEnvironment().getConnection().getAdmin()) {
-        sns = admin.listTableNames();
-        if (sns == null) return;
-        for (TableName tableName: tableNamesList) {
+        for (TableName tableName : tableNamesList) {
           // Skip checks for a table that does not exist
-          if (!admin.tableExists(tableName)) continue;
-          requirePermission(ctx, "getTableDescriptors", tableName, null, null,
-            Action.ADMIN, Action.CREATE);
+          if (!admin.tableExists(tableName)) {
+            continue;
+          }
+          requirePermission(ctx, "getTableDescriptors", tableName, null, null, Action.ADMIN,
+            Action.CREATE);
         }
       }
     }
@@ -2448,7 +2458,10 @@ public class AccessController implements MasterCoprocessor, RegionCoprocessor,
   }
 
   /**
-   * @deprecated Use {@link Admin#hasUserPermissions(String, List)} instead.
+   * @deprecated since 2.2.0 and will be removed in 4.0.0. Use
+   *   {@link Admin#hasUserPermissions(String, List)} instead.
+   * @see Admin#hasUserPermissions(String, List)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-22117">HBASE-22117</a>
    */
   @Deprecated
   @Override

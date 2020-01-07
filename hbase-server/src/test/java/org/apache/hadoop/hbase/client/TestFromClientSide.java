@@ -17,12 +17,15 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.apache.hadoop.hbase.HBaseTestingUtility.countRows;
+import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -43,6 +46,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.CellUtil;
@@ -53,14 +57,12 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
@@ -100,8 +102,9 @@ import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.NonRepeatedEnvironmentEdge;
-import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -150,7 +153,7 @@ public class TestFromClientSide {
     Configuration conf = TEST_UTIL.getConfiguration();
     conf.setStrings(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY,
       Arrays.stream(cps).map(Class::getName).toArray(String[]::new));
-    conf.setBoolean("hbase.table.sanity.checks", true); // enable for below tests
+    conf.setBoolean(TableDescriptorChecker.TABLE_SANITY_CHECKS, true); // enable for below tests
     // We need more than one region server in this test
     TEST_UTIL.startMiniCluster(SLAVES);
   }
@@ -172,8 +175,8 @@ public class TestFromClientSide {
   public void testDuplicateAppend() throws Exception {
     HTableDescriptor hdt = TEST_UTIL.createTableDescriptor(name.getMethodName());
     Map<String, String> kvs = new HashMap<>();
-    kvs.put(HConnectionTestingUtility.SleepAtFirstRpcCall.SLEEP_TIME_CONF_KEY, "2000");
-    hdt.addCoprocessor(HConnectionTestingUtility.SleepAtFirstRpcCall.class.getName(), null, 1, kvs);
+    kvs.put(SleepAtFirstRpcCall.SLEEP_TIME_CONF_KEY, "2000");
+    hdt.addCoprocessor(SleepAtFirstRpcCall.class.getName(), null, 1, kvs);
     TEST_UTIL.createTable(hdt, new byte[][] { ROW }).close();
 
     Configuration c = new Configuration(TEST_UTIL.getConfiguration());
@@ -181,31 +184,23 @@ public class TestFromClientSide {
     // Client will retry beacuse rpc timeout is small than the sleep time of first rpc call
     c.setInt(HConstants.HBASE_RPC_TIMEOUT_KEY, 1500);
 
-    Connection connection = ConnectionFactory.createConnection(c);
-    try (Table t = connection.getTable(TableName.valueOf(name.getMethodName()))) {
-      if (t instanceof HTable) {
-        HTable table = (HTable) t;
-        table.setOperationTimeout(3 * 1000);
+    try (Connection connection = ConnectionFactory.createConnection(c);
+        Table table = connection.getTableBuilder(TableName.valueOf(name.getMethodName()), null)
+          .setOperationTimeout(3 * 1000).build()) {
+      Append append = new Append(ROW);
+      append.addColumn(HBaseTestingUtility.fam1, QUALIFIER, VALUE);
+      Result result = table.append(append);
 
-        try {
-          Append append = new Append(ROW);
-          append.addColumn(HBaseTestingUtility.fam1, QUALIFIER, VALUE);
-          Result result = table.append(append);
+      // Verify expected result
+      Cell[] cells = result.rawCells();
+      assertEquals(1, cells.length);
+      assertKey(cells[0], ROW, HBaseTestingUtility.fam1, QUALIFIER, VALUE);
 
-          // Verify expected result
-          Cell[] cells = result.rawCells();
-          assertEquals(1, cells.length);
-          assertKey(cells[0], ROW, HBaseTestingUtility.fam1, QUALIFIER, VALUE);
-
-          // Verify expected result again
-          Result readResult = table.get(new Get(ROW));
-          cells = readResult.rawCells();
-          assertEquals(1, cells.length);
-          assertKey(cells[0], ROW, HBaseTestingUtility.fam1, QUALIFIER, VALUE);
-        } finally {
-          connection.close();
-        }
-      }
+      // Verify expected result again
+      Result readResult = table.get(new Get(ROW));
+      cells = readResult.rawCells();
+      assertEquals(1, cells.length);
+      assertKey(cells[0], ROW, HBaseTestingUtility.fam1, QUALIFIER, VALUE);
     }
   }
 
@@ -482,10 +477,10 @@ public class TestFromClientSide {
       List<HRegionLocation> regions = splitTable(t);
       assertRowCount(t, rowCount);
       // Get end key of first region.
-      byte[] endKey = regions.get(0).getRegionInfo().getEndKey();
+      byte[] endKey = regions.get(0).getRegion().getEndKey();
       // Count rows with a filter that stops us before passed 'endKey'.
       // Should be count of rows in first region.
-      int endKeyCount = TEST_UTIL.countRows(t, createScanWithRowFilter(endKey));
+      int endKeyCount = countRows(t, createScanWithRowFilter(endKey));
       assertTrue(endKeyCount < rowCount);
 
       // How do I know I did not got to second region?  Thats tough.  Can't really
@@ -497,30 +492,29 @@ public class TestFromClientSide {
       // New test.  Make it so scan goes into next region by one and then two.
       // Make sure count comes out right.
       byte[] key = new byte[]{endKey[0], endKey[1], (byte) (endKey[2] + 1)};
-      int plusOneCount = TEST_UTIL.countRows(t, createScanWithRowFilter(key));
+      int plusOneCount = countRows(t, createScanWithRowFilter(key));
       assertEquals(endKeyCount + 1, plusOneCount);
       key = new byte[]{endKey[0], endKey[1], (byte) (endKey[2] + 2)};
-      int plusTwoCount = TEST_UTIL.countRows(t, createScanWithRowFilter(key));
+      int plusTwoCount = countRows(t, createScanWithRowFilter(key));
       assertEquals(endKeyCount + 2, plusTwoCount);
 
       // New test.  Make it so I scan one less than endkey.
       key = new byte[]{endKey[0], endKey[1], (byte) (endKey[2] - 1)};
-      int minusOneCount = TEST_UTIL.countRows(t, createScanWithRowFilter(key));
+      int minusOneCount = countRows(t, createScanWithRowFilter(key));
       assertEquals(endKeyCount - 1, minusOneCount);
       // For above test... study logs.  Make sure we do "Finished with scanning.."
       // in first region and that we do not fall into the next region.
 
-      key = new byte[]{'a', 'a', 'a'};
-      int countBBB = TEST_UTIL.countRows(t,
-              createScanWithRowFilter(key, null, CompareOperator.EQUAL));
+      key = new byte[] { 'a', 'a', 'a' };
+      int countBBB = countRows(t, createScanWithRowFilter(key, null, CompareOperator.EQUAL));
       assertEquals(1, countBBB);
 
-      int countGreater = TEST_UTIL.countRows(t, createScanWithRowFilter(endKey, null,
-              CompareOperator.GREATER_OR_EQUAL));
+      int countGreater =
+        countRows(t, createScanWithRowFilter(endKey, null, CompareOperator.GREATER_OR_EQUAL));
       // Because started at start of table.
       assertEquals(0, countGreater);
-      countGreater = TEST_UTIL.countRows(t, createScanWithRowFilter(endKey, endKey,
-              CompareOperator.GREATER_OR_EQUAL));
+      countGreater =
+        countRows(t, createScanWithRowFilter(endKey, endKey, CompareOperator.GREATER_OR_EQUAL));
       assertEquals(rowCount - endKeyCount, countGreater);
     }
   }
@@ -552,16 +546,14 @@ public class TestFromClientSide {
     return s;
   }
 
-  private void assertRowCount(final Table t, final int expected)
-  throws IOException {
-    assertEquals(expected, TEST_UTIL.countRows(t, new Scan()));
+  private void assertRowCount(final Table t, final int expected) throws IOException {
+    assertEquals(expected, countRows(t, new Scan()));
   }
 
-  /*
+  /**
    * Split table into multiple regions.
    * @param t Table to split.
    * @return Map of regions to servers.
-   * @throws IOException
    */
   private List<HRegionLocation> splitTable(final Table t)
   throws IOException, InterruptedException {
@@ -1165,21 +1157,25 @@ public class TestFromClientSide {
     }
   }
 
-  @Test
-  public void testNull() throws Exception {
+  @Test(expected = NullPointerException.class)
+  public void testNullTableName() throws IOException {
+    // Null table name (should NOT work)
+    TEST_UTIL.createTable((TableName)null, FAMILY);
+    fail("Creating a table with null name passed, should have failed");
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void testNullFamilyName() throws IOException {
     final TableName tableName = TableName.valueOf(name.getMethodName());
 
-    // Null table name (should NOT work)
-    try {
-      TEST_UTIL.createTable((TableName)null, FAMILY);
-      fail("Creating a table with null name passed, should have failed");
-    } catch(Exception e) {}
-
     // Null family (should NOT work)
-    try {
-      TEST_UTIL.createTable(tableName, new byte[][]{null});
-      fail("Creating a table with a null family passed, should fail");
-    } catch(Exception e) {}
+    TEST_UTIL.createTable(tableName, new byte[][]{null});
+    fail("Creating a table with a null family passed, should fail");
+  }
+
+  @Test
+  public void testNullRowAndQualifier() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
 
     try (Table ht = TEST_UTIL.createTable(tableName, FAMILY)) {
 
@@ -1211,9 +1207,13 @@ public class TestFromClientSide {
         assertEmptyResult(result);
       }
     }
+  }
 
-    // Use a new table
-    try (Table ht = TEST_UTIL.createTable(TableName.valueOf(name.getMethodName() + "2"), FAMILY)) {
+  @Test
+  public void testNullEmptyQualifier() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
+
+    try (Table ht = TEST_UTIL.createTable(tableName, FAMILY)) {
 
       // Empty qualifier, byte[0] instead of null (should work)
       try {
@@ -1242,9 +1242,16 @@ public class TestFromClientSide {
         assertEmptyResult(result);
 
       } catch (Exception e) {
-        throw new IOException("Using a row with null qualifier threw exception, should ");
+        throw new IOException("Using a row with null qualifier should not throw exception");
       }
+    }
+  }
 
+  @Test
+  public void testNullValue() throws IOException {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
+
+    try (Table ht = TEST_UTIL.createTable(tableName, FAMILY)) {
       // Null value
       try {
         Put put = new Put(ROW);
@@ -1560,6 +1567,7 @@ public class TestFromClientSide {
   }
 
   @Test
+  @SuppressWarnings("checkstyle:MethodLength")
   public void testVersionLimits() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     byte [][] FAMILIES = makeNAscii(FAMILY, 3);
@@ -2247,13 +2255,9 @@ public class TestFromClientSide {
   @Test
   public void testBatchOperationsWithErrors() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
-    try (Table foo = TEST_UTIL.createTable(tableName, new byte[][] {FAMILY}, 10)) {
+    try (Table foo = TEST_UTIL.createTable(tableName, new byte[][] { FAMILY }, 10)) {
 
       int NUM_OPS = 100;
-      int FAILED_OPS = 50;
-
-      RetriesExhaustedWithDetailsException expectedException = null;
-      IllegalArgumentException iae = null;
 
       // 1.1 Put with no column families (local validation, runtime exception)
       List<Put> puts = new ArrayList<Put>(NUM_OPS);
@@ -2264,16 +2268,15 @@ public class TestFromClientSide {
 
       try {
         foo.put(puts);
+        fail();
       } catch (IllegalArgumentException e) {
-        iae = e;
+        // expected
+        assertEquals(NUM_OPS, puts.size());
       }
-      assertNotNull(iae);
-      assertEquals(NUM_OPS, puts.size());
 
       // 1.2 Put with invalid column family
-      iae = null;
       puts.clear();
-      for (int i = 0; i != NUM_OPS; i++) {
+      for (int i = 0; i < NUM_OPS; i++) {
         Put put = new Put(Bytes.toBytes(i));
         put.addColumn((i % 2) == 0 ? FAMILY : INVALID_FAMILY, FAMILY, Bytes.toBytes(i));
         puts.add(put);
@@ -2281,47 +2284,46 @@ public class TestFromClientSide {
 
       try {
         foo.put(puts);
-      } catch (RetriesExhaustedWithDetailsException e) {
-        expectedException = e;
+        fail();
+      } catch (RetriesExhaustedException e) {
+        // expected
+        assertThat(e.getCause(), instanceOf(NoSuchColumnFamilyException.class));
       }
-      assertNotNull(expectedException);
-      assertEquals(FAILED_OPS, expectedException.exceptions.size());
-      assertTrue(expectedException.actions.contains(puts.get(1)));
 
       // 2.1 Get non-existent rows
       List<Get> gets = new ArrayList<>(NUM_OPS);
       for (int i = 0; i < NUM_OPS; i++) {
         Get get = new Get(Bytes.toBytes(i));
-        // get.addColumn(FAMILY, FAMILY);
         gets.add(get);
       }
       Result[] getsResult = foo.get(gets);
-
       assertNotNull(getsResult);
       assertEquals(NUM_OPS, getsResult.length);
-      assertNull(getsResult[1].getRow());
+      for (int i = 0; i < NUM_OPS; i++) {
+        Result getResult = getsResult[i];
+        if (i % 2 == 0) {
+          assertFalse(getResult.isEmpty());
+        } else {
+          assertTrue(getResult.isEmpty());
+        }
+      }
 
       // 2.2 Get with invalid column family
       gets.clear();
-      getsResult = null;
-      expectedException = null;
       for (int i = 0; i < NUM_OPS; i++) {
         Get get = new Get(Bytes.toBytes(i));
         get.addColumn((i % 2) == 0 ? FAMILY : INVALID_FAMILY, FAMILY);
         gets.add(get);
       }
       try {
-        getsResult = foo.get(gets);
-      } catch (RetriesExhaustedWithDetailsException e) {
-        expectedException = e;
+        foo.get(gets);
+        fail();
+      } catch (RetriesExhaustedException e) {
+        // expected
+        assertThat(e.getCause(), instanceOf(NoSuchColumnFamilyException.class));
       }
-      assertNull(getsResult);
-      assertNotNull(expectedException);
-      assertEquals(FAILED_OPS, expectedException.exceptions.size());
-      assertTrue(expectedException.actions.contains(gets.get(1)));
 
       // 3.1 Delete with invalid column family
-      expectedException = null;
       List<Delete> deletes = new ArrayList<>(NUM_OPS);
       for (int i = 0; i < NUM_OPS; i++) {
         Delete delete = new Delete(Bytes.toBytes(i));
@@ -2330,14 +2332,24 @@ public class TestFromClientSide {
       }
       try {
         foo.delete(deletes);
-      } catch (RetriesExhaustedWithDetailsException e) {
-        expectedException = e;
+        fail();
+      } catch (RetriesExhaustedException e) {
+        // expected
+        assertThat(e.getCause(), instanceOf(NoSuchColumnFamilyException.class));
       }
-      assertEquals((NUM_OPS - FAILED_OPS), deletes.size());
-      assertNotNull(expectedException);
-      assertEquals(FAILED_OPS, expectedException.exceptions.size());
-      assertTrue(expectedException.actions.contains(deletes.get(1)));
 
+      // all valid rows should have been deleted
+      gets.clear();
+      for (int i = 0; i < NUM_OPS; i++) {
+        Get get = new Get(Bytes.toBytes(i));
+        gets.add(get);
+      }
+      getsResult = foo.get(gets);
+      assertNotNull(getsResult);
+      assertEquals(NUM_OPS, getsResult.length);
+      for (Result getResult : getsResult) {
+        assertTrue(getResult.isEmpty());
+      }
 
       // 3.2 Delete non-existent rows
       deletes.clear();
@@ -2346,59 +2358,7 @@ public class TestFromClientSide {
         deletes.add(delete);
       }
       foo.delete(deletes);
-
-      assertTrue(deletes.isEmpty());
     }
-  }
-
-  /*
-   * Baseline "scalability" test.
-   *
-   * Tests one hundred families, one million columns, one million versions
-   */
-  @Ignore @Test
-  public void testMillions() throws Exception {
-
-    // 100 families
-
-    // millions of columns
-
-    // millions of versions
-
-  }
-
-  @Ignore @Test
-  public void testMultipleRegionsAndBatchPuts() throws Exception {
-    // Two family table
-
-    // Insert lots of rows
-
-    // Insert to the same row with batched puts
-
-    // Insert to multiple rows with batched puts
-
-    // Split the table
-
-    // Get row from first region
-
-    // Get row from second region
-
-    // Scan all rows
-
-    // Insert to multiple regions with batched puts
-
-    // Get row from first region
-
-    // Get row from second region
-
-    // Scan all rows
-
-
-  }
-
-  @Ignore @Test
-  public void testMultipleRowMultipleFamily() throws Exception {
-
   }
 
   //
@@ -4303,8 +4263,7 @@ public class TestFromClientSide {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     TEST_UTIL.createTable(tableName, HConstants.CATALOG_FAMILY);
     try (Connection conn = ConnectionFactory.createConnection(TEST_UTIL.getConfiguration())) {
-      try (Table t = conn.getTable(tableName);
-           Admin admin = conn.getAdmin()) {
+      try (Table t = conn.getTable(tableName); Admin admin = conn.getAdmin()) {
         assertTrue(admin.tableExists(tableName));
         assertTrue(t.get(new Get(ROW)).isEmpty());
       }
@@ -4323,8 +4282,8 @@ public class TestFromClientSide {
       boolean tablesOnMaster = LoadBalancer.isTablesOnMaster(TEST_UTIL.getConfiguration());
       try (Admin admin = conn.getAdmin()) {
         assertTrue(admin.tableExists(tableName));
-        assertTrue(admin.getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS))
-                .getLiveServerMetrics().size() == SLAVES + (tablesOnMaster ? 1 : 0));
+        assertTrue(admin.getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS)).getLiveServerMetrics()
+          .size() == SLAVES + (tablesOnMaster ? 1 : 0));
       }
     }
   }
@@ -4373,37 +4332,33 @@ public class TestFromClientSide {
       // to be reloaded.
 
       // Test user metadata
-      try (Admin admin = TEST_UTIL.getAdmin()) {
-        // make a modifiable descriptor
-        HTableDescriptor desc = new HTableDescriptor(a.getTableDescriptor());
-        // offline the table
-        admin.disableTable(tableAname);
-        // add a user attribute to HTD
-        desc.setValue(attrName, attrValue);
-        // add a user attribute to HCD
-        for (HColumnDescriptor c : desc.getFamilies()) {
-          c.setValue(attrName, attrValue);
-        }
-        // update metadata for all regions of this table
-        admin.modifyTable(desc);
-        // enable the table
-        admin.enableTable(tableAname);
-      }
+      Admin admin = TEST_UTIL.getAdmin();
+      // make a modifiable descriptor
+      HTableDescriptor desc = new HTableDescriptor(a.getDescriptor());
+      // offline the table
+      admin.disableTable(tableAname);
+      // add a user attribute to HTD
+      desc.setValue(attrName, attrValue);
+      // add a user attribute to HCD
+      for (HColumnDescriptor c : desc.getFamilies())
+        c.setValue(attrName, attrValue);
+      // update metadata for all regions of this table
+      admin.modifyTable(desc);
+      // enable the table
+      admin.enableTable(tableAname);
 
       // Test that attribute changes were applied
-      HTableDescriptor desc = a.getTableDescriptor();
+      desc = new HTableDescriptor(a.getDescriptor());
       assertEquals("wrong table descriptor returned", desc.getTableName(), tableAname);
       // check HTD attribute
       value = desc.getValue(attrName);
       assertFalse("missing HTD attribute value", value == null);
-      assertFalse("HTD attribute value is incorrect",
-              Bytes.compareTo(value, attrValue) != 0);
+      assertFalse("HTD attribute value is incorrect", Bytes.compareTo(value, attrValue) != 0);
       // check HCD attribute
       for (HColumnDescriptor c : desc.getFamilies()) {
         value = c.getValue(attrName);
         assertFalse("missing HCD attribute value", value == null);
-        assertFalse("HCD attribute value is incorrect",
-                Bytes.compareTo(value, attrValue) != 0);
+        assertFalse("HCD attribute value is incorrect", Bytes.compareTo(value, attrValue) != 0);
       }
     }
   }
@@ -4427,7 +4382,7 @@ public class TestFromClientSide {
 
       // set block size to 64 to making 2 kvs into one block, bypassing the walkForwardInSingleRow
       // in Store.rowAtOrBeforeFromStoreFile
-      String regionName = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
+      String regionName = locator.getAllRegionLocations().get(0).getRegion().getEncodedName();
       HRegion region = TEST_UTIL.getRSForFirstRegionInTable(tableName).getRegion(regionName);
       Put put1 = new Put(firstRow);
       Put put2 = new Put(secondRow);
@@ -4571,9 +4526,7 @@ public class TestFromClientSide {
     LOG.info("Starting testRowMutation");
     final TableName tableName = TableName.valueOf(name.getMethodName());
     try (Table t = TEST_UTIL.createTable(tableName, FAMILY)) {
-      byte[][] QUALIFIERS = new byte[][]{
-              Bytes.toBytes("a"), Bytes.toBytes("b")
-      };
+      byte[][] QUALIFIERS = new byte[][] { Bytes.toBytes("a"), Bytes.toBytes("b") };
       RowMutations arm = new RowMutations(ROW);
       Put p = new Put(ROW);
       p.addColumn(FAMILY, QUALIFIERS[0], VALUE);
@@ -4591,20 +4544,22 @@ public class TestFromClientSide {
       Delete d = new Delete(ROW);
       d.addColumns(FAMILY, QUALIFIERS[0]);
       arm.add(d);
-      // TODO: Trying mutateRow again.  The batch was failing with a one try only.
+      // TODO: Trying mutateRow again. The batch was failing with a one try only.
       t.mutateRow(arm);
       r = t.get(g);
       assertEquals(0, Bytes.compareTo(VALUE, r.getValue(FAMILY, QUALIFIERS[1])));
       assertNull(r.getValue(FAMILY, QUALIFIERS[0]));
 
-      //Test that we get a region level exception
+      // Test that we get a region level exception
       try {
         arm = new RowMutations(ROW);
         p = new Put(ROW);
-        p.addColumn(new byte[]{'b', 'o', 'g', 'u', 's'}, QUALIFIERS[0], VALUE);
+        p.addColumn(new byte[] { 'b', 'o', 'g', 'u', 's' }, QUALIFIERS[0], VALUE);
         arm.add(p);
         t.mutateRow(arm);
         fail("Expected NoSuchColumnFamilyException");
+      } catch (NoSuchColumnFamilyException e) {
+        return;
       } catch (RetriesExhaustedWithDetailsException e) {
         for (Throwable rootCause : e.getCauses()) {
           if (rootCause instanceof NoSuchColumnFamilyException) {
@@ -4724,14 +4679,11 @@ public class TestFromClientSide {
       for (int j = 0; j != resultWithWal.rawCells().length; ++j) {
         Cell cellWithWal = resultWithWal.rawCells()[j];
         Cell cellWithoutWal = resultWithoutWal.rawCells()[j];
-        assertTrue(Bytes.equals(CellUtil.cloneRow(cellWithWal),
-                CellUtil.cloneRow(cellWithoutWal)));
-        assertTrue(Bytes.equals(CellUtil.cloneFamily(cellWithWal),
-                CellUtil.cloneFamily(cellWithoutWal)));
-        assertTrue(Bytes.equals(CellUtil.cloneQualifier(cellWithWal),
-                CellUtil.cloneQualifier(cellWithoutWal)));
-        assertTrue(Bytes.equals(CellUtil.cloneValue(cellWithWal),
-                CellUtil.cloneValue(cellWithoutWal)));
+        assertArrayEquals(CellUtil.cloneRow(cellWithWal), CellUtil.cloneRow(cellWithoutWal));
+        assertArrayEquals(CellUtil.cloneFamily(cellWithWal), CellUtil.cloneFamily(cellWithoutWal));
+        assertArrayEquals(CellUtil.cloneQualifier(cellWithWal),
+          CellUtil.cloneQualifier(cellWithoutWal));
+        assertArrayEquals(CellUtil.cloneValue(cellWithWal), CellUtil.cloneValue(cellWithoutWal));
       }
     }
   }
@@ -4917,7 +4869,43 @@ public class TestFromClientSide {
       assertFalse(ok);
 
       ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.from(ts + 10000))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertFalse(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.between(ts + 10000, ts + 20000))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertFalse(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.until(ts))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertFalse(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
               .timeRange(TimeRange.at(ts))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertTrue(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.from(ts))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertTrue(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.between(ts, ts + 20000))
+              .ifEquals(VALUE)
+              .thenPut(put);
+      assertTrue(ok);
+
+      ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+              .timeRange(TimeRange.until(ts + 10000))
               .ifEquals(VALUE)
               .thenPut(put);
       assertTrue(ok);
@@ -5296,7 +5284,7 @@ public class TestFromClientSide {
     try (Table table = TEST_UTIL.createTable(tableName, FAMILY)) {
       try (RegionLocator locator = TEST_UTIL.getConnection().getRegionLocator(tableName)) {
         // get the block cache and region
-        String regionName = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
+        String regionName = locator.getAllRegionLocations().get(0).getRegion().getEncodedName();
 
         HRegion region = TEST_UTIL.getRSForFirstRegionInTable(tableName)
                 .getRegion(regionName);
@@ -5329,15 +5317,19 @@ public class TestFromClientSide {
         put.addColumn(FAMILY, QUALIFIER, data);
         table.put(put);
         assertTrue(Bytes.equals(table.get(new Get(ROW)).value(), data));
+
         // data was in memstore so don't expect any changes
         assertEquals(startBlockCount, cache.getBlockCount());
         assertEquals(startBlockHits, cache.getStats().getHitCount());
         assertEquals(startBlockMiss, cache.getStats().getMissCount());
+
         // flush the data
-        System.out.println("Flushing cache");
+        LOG.debug("Flushing cache");
         region.flush(true);
-        // expect one more block in cache, no change in hits/misses
-        long expectedBlockCount = startBlockCount + 1;
+
+        // expect two more blocks in cache - DATA and ROOT_INDEX
+        // , no change in hits/misses
+        long expectedBlockCount = startBlockCount + 2;
         long expectedBlockHits = startBlockHits;
         long expectedBlockMiss = startBlockMiss;
         assertEquals(expectedBlockCount, cache.getBlockCount());
@@ -5363,7 +5355,9 @@ public class TestFromClientSide {
         // flush, one new block
         System.out.println("Flushing cache");
         region.flush(true);
-        assertEquals(++expectedBlockCount, cache.getBlockCount());
+
+        // + 1 for Index Block
+        assertEquals(++expectedBlockCount + 1, cache.getBlockCount());
         assertEquals(expectedBlockHits, cache.getStats().getHitCount());
         assertEquals(expectedBlockMiss, cache.getStats().getMissCount());
         // compact, net minus two blocks, two hits, no misses
@@ -5417,7 +5411,7 @@ public class TestFromClientSide {
         RegionLocator locator = TEST_UTIL.getConnection().getRegionLocator(tableName)) {
       List<HRegionLocation> allRegionLocations = locator.getAllRegionLocations();
       assertEquals(1, allRegionLocations.size());
-      HRegionInfo regionInfo = allRegionLocations.get(0).getRegionInfo();
+      RegionInfo regionInfo = allRegionLocations.get(0).getRegion();
       ServerName addrBefore = allRegionLocations.get(0).getServerName();
       // Verify region location before move.
       HRegionLocation addrCache = locator.getRegionLocation(regionInfo.getStartKey(), false);
@@ -5519,7 +5513,7 @@ public class TestFromClientSide {
       do {
         HRegionLocation regionLocation = r.getRegionLocation(currentKey);
         regionsInRange.add(regionLocation);
-        currentKey = regionLocation.getRegionInfo().getEndKey();
+        currentKey = regionLocation.getRegion().getEndKey();
       } while (!Bytes.equals(currentKey, HConstants.EMPTY_END_ROW)
           && (endKeyIsEndOfTable || Bytes.compareTo(currentKey, endKey) < 0));
       return regionsInRange;
@@ -6031,6 +6025,7 @@ public class TestFromClientSide {
   }
 
   @Test
+  @SuppressWarnings("checkstyle:MethodLength")
   public void testDeletesWithReverseScan() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     byte[][] ROWS = makeNAscii(ROW, 6);
@@ -6446,19 +6441,6 @@ public class TestFromClientSide {
     }
   }
 
-  private static Pair<byte[][], byte[][]> getStartEndKeys(List<RegionLocations> regions) {
-    final byte[][] startKeyList = new byte[regions.size()][];
-    final byte[][] endKeyList = new byte[regions.size()][];
-
-    for (int i = 0; i < regions.size(); i++) {
-      RegionInfo region = regions.get(i).getRegionLocation().getRegion();
-      startKeyList[i] = region.getStartKey();
-      endKeyList[i] = region.getEndKey();
-    }
-
-    return new Pair<>(startKeyList, endKeyList);
-  }
-
   @Test
   public void testFilterAllRecords() throws IOException {
     Scan scan = new Scan();
@@ -6469,30 +6451,6 @@ public class TestFromClientSide {
     try (Table table = TEST_UTIL.getConnection().getTable(TableName.META_TABLE_NAME)) {
       try (ResultScanner s = table.getScanner(scan)) {
         assertNull(s.next());
-      }
-    }
-  }
-
-  @Test
-  public void testRegionCache() throws IOException {
-    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(name.getMethodName()));
-    HColumnDescriptor fam = new HColumnDescriptor(FAMILY);
-    htd.addFamily(fam);
-    byte[][] KEYS = HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE;
-    try (Admin admin = TEST_UTIL.getAdmin()) {
-      admin.createTable(htd, KEYS);
-      HRegionLocator locator =
-              (HRegionLocator) admin.getConnection().getRegionLocator(htd.getTableName());
-      List<HRegionLocation> results = locator.getAllRegionLocations();
-      int number = ((ConnectionImplementation) admin.getConnection())
-              .getNumberOfCachedRegionLocations(htd.getTableName());
-      assertEquals(results.size(), number);
-      ConnectionImplementation conn = ((ConnectionImplementation) admin.getConnection());
-      assertNotNull("Can't get cached location for row aaa",
-              conn.getCachedLocation(htd.getTableName(), Bytes.toBytes("aaa")));
-      for (byte[] startKey : HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE) {
-        assertNotNull("Can't get cached location for row " +
-                Bytes.toString(startKey), (conn.getCachedLocation(htd.getTableName(), startKey)));
       }
     }
   }
@@ -6808,5 +6766,60 @@ public class TestFromClientSide {
         .build();
 
     TEST_UTIL.getAdmin().modifyTable(newDesc);
+  }
+
+  @Test(timeout = 60000)
+  public void testModifyTableWithMemstoreData() throws Exception {
+    TableName tableName = TableName.valueOf(name.getMethodName());
+    createTableAndValidateTableSchemaModification(tableName, true);
+  }
+
+  @Test(timeout = 60000)
+  public void testDeleteCFWithMemstoreData() throws Exception {
+    TableName tableName = TableName.valueOf(name.getMethodName());
+    createTableAndValidateTableSchemaModification(tableName, false);
+  }
+
+  /**
+   * Create table and validate online schema modification
+   * @param tableName Table name
+   * @param modifyTable Modify table if true otherwise delete column family
+   * @throws IOException in case of failures
+   */
+  private void createTableAndValidateTableSchemaModification(TableName tableName,
+      boolean modifyTable) throws Exception {
+    Admin admin = TEST_UTIL.getAdmin();
+    // Create table with two Cfs
+    byte[] cf1 = Bytes.toBytes("cf1");
+    byte[] cf2 = Bytes.toBytes("cf2");
+    TableDescriptor tableDesc = TableDescriptorBuilder.newBuilder(tableName)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(cf1))
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(cf2)).build();
+    admin.createTable(tableDesc);
+
+    Table t = TEST_UTIL.getConnection().getTable(tableName);
+    // Insert few records and flush the table
+    t.put(new Put(ROW).addColumn(cf1, QUALIFIER, Bytes.toBytes("val1")));
+    t.put(new Put(ROW).addColumn(cf2, QUALIFIER, Bytes.toBytes("val2")));
+    admin.flush(tableName);
+    Path tableDir = FSUtils.getTableDir(TEST_UTIL.getDefaultRootDirPath(), tableName);
+    List<Path> regionDirs = FSUtils.getRegionDirs(TEST_UTIL.getTestFileSystem(), tableDir);
+    assertTrue(regionDirs.size() == 1);
+    List<Path> familyDirs = FSUtils.getFamilyDirs(TEST_UTIL.getTestFileSystem(), regionDirs.get(0));
+    assertTrue(familyDirs.size() == 2);
+
+    // Insert record but dont flush the table
+    t.put(new Put(ROW).addColumn(cf1, QUALIFIER, Bytes.toBytes("val2")));
+    t.put(new Put(ROW).addColumn(cf2, QUALIFIER, Bytes.toBytes("val2")));
+
+    if (modifyTable) {
+      tableDesc = TableDescriptorBuilder.newBuilder(tableDesc).removeColumnFamily(cf2).build();
+      admin.modifyTable(tableDesc);
+    } else {
+      admin.deleteColumnFamily(tableName, cf2);
+    }
+    // After table modification or delete family there should be only one CF in FS
+    familyDirs = FSUtils.getFamilyDirs(TEST_UTIL.getTestFileSystem(), regionDirs.get(0));
+    assertTrue("CF dir count should be 1, but was " + familyDirs.size(), familyDirs.size() == 1);
   }
 }

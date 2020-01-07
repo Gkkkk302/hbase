@@ -21,17 +21,21 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.yetus.audience.InterfaceAudience;
 
+import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos;
 
 /**
- * Hbck fixup tool APIs. Obtain an instance from {@link ClusterConnection#getHbck()} and call
+ * Hbck fixup tool APIs. Obtain an instance from {@link Connection#getHbck()} and call
  * {@link #close()} when done.
  * <p>WARNING: the below methods can damage the cluster. It may leave the cluster in an
  * indeterminate state, e.g. region not assigned, or some hdfs files left behind. After running
@@ -39,7 +43,6 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos;
  * procedures to get regions back online. DO AT YOUR OWN RISK. For experienced users only.
  *
  * @see ConnectionFactory
- * @see ClusterConnection
  * @since 2.0.2, 2.1.1
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.HBCK)
@@ -51,6 +54,14 @@ public interface Hbck extends Abortable, Closeable {
    * @return previous state of the table in Meta
    */
   TableState setTableStateInMeta(TableState state) throws IOException;
+
+  /**
+   * Update region state in Meta only. No procedures are submitted to manipulate the given region
+   * or any other region from same table.
+   * @param states list of all region states to be updated in meta
+   * @return previous state of the region in Meta
+   */
+  List<RegionState> setRegionStateInMeta(List<RegionState> states) throws IOException;
 
   /**
    * Like {@link Admin#assign(byte[])} but 'raw' in that it can do more than one Region at a time
@@ -107,18 +118,29 @@ public interface Hbck extends Abortable, Closeable {
   List<Boolean> bypassProcedure(List<Long> pids, long waitTime, boolean override, boolean recursive)
       throws IOException;
 
-  List<Long> scheduleServerCrashProcedure(List<HBaseProtos.ServerName> serverNames)
-      throws IOException;
+  /**
+   * Use {@link #scheduleServerCrashProcedures(List)} instead.
+   * @deprecated since 2.2.1. Will removed in 3.0.0.
+   */
+  @Deprecated
+  default List<Long> scheduleServerCrashProcedure(List<HBaseProtos.ServerName> serverNames)
+      throws IOException {
+    return scheduleServerCrashProcedures(
+        serverNames.stream().map(ProtobufUtil::toServerName).collect(Collectors.toList()));
+  }
+
+  List<Long> scheduleServerCrashProcedures(List<ServerName> serverNames) throws IOException;
 
   /**
-   * This method is to get the regions which left by failed split/merge procedures for a certain
-   * table. There are two kinds of region this method will return. One is orphan regions left on FS,
-   * which left because split/merge procedure crashed before updating meta. And the other one is
-   * unassigned split daughter region or merged region, which left because split/merge procedure
-   * crashed before assignment.
-   * @param tableName table to check
-   * @return Map of problematic regions
+   * Request HBCK chore to run at master side.
+   *
+   * @return <code>true</code> if HBCK chore ran, <code>false</code> if HBCK chore already running
+   * @throws IOException if a remote or network exception occurs
    */
-  Map<String, MasterProtos.RegionErrorType>
-      getFailedSplitMergeLegacyRegions(List<TableName> tableName) throws IOException;
+  boolean runHbckChore() throws IOException;
+
+  /**
+   * Fix Meta.
+   */
+  void fixMeta() throws IOException;
 }

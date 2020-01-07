@@ -746,9 +746,10 @@ public interface AsyncAdmin {
 
   /**
    * Take a snapshot for the given table. If the table is enabled, a FLUSH-type snapshot will be
-   * taken. If the table is disabled, an offline snapshot is taken. Snapshots are considered unique
-   * based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same name (even
-   * a different type or with different parameters) will fail with a
+   * taken. If the table is disabled, an offline snapshot is taken. Snapshots are taken
+   * sequentially even when requested concurrently, across all tables. Snapshots are considered
+   * unique based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same
+   * name (even a different type or with different parameters) will fail with a
    * {@link org.apache.hadoop.hbase.snapshot.SnapshotCreationException} indicating the duplicate
    * naming. Snapshot names follow the same naming constraints as tables in HBase. See
    * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
@@ -761,7 +762,8 @@ public interface AsyncAdmin {
 
   /**
    * Create typed snapshot of the table. Snapshots are considered unique based on <b>the name of the
-   * snapshot</b>. Attempts to take a snapshot with the same name (even a different type or with
+   * snapshot</b>. Snapshots are taken sequentially even when requested concurrently, across all
+   * tables. Attempts to take a snapshot with the same name (even a different type or with
    * different parameters) will fail with a
    * {@link org.apache.hadoop.hbase.snapshot.SnapshotCreationException} indicating the duplicate
    * naming. Snapshot names follow the same naming constraints as tables in HBase. See
@@ -777,10 +779,9 @@ public interface AsyncAdmin {
   }
 
   /**
-   * Take a snapshot and wait for the server to complete that snapshot asynchronously. Only a single
-   * snapshot should be taken at a time for an instance of HBase, or results may be undefined (you
-   * can tell multiple HBase clusters to snapshot at the same time, but only one at a time for a
-   * single cluster). Snapshots are considered unique based on <b>the name of the snapshot</b>.
+   * Take a snapshot and wait for the server to complete that snapshot asynchronously. Snapshots
+   * are taken sequentially even when requested concurrently, across all tables. Snapshots are
+   * considered unique based on <b>the name of the snapshot</b>.
    * Attempts to take a snapshot with the same name (even a different type or with different
    * parameters) will fail with a {@link org.apache.hadoop.hbase.snapshot.SnapshotCreationException}
    * indicating the duplicate naming. Snapshot names follow the same naming constraints as tables in
@@ -975,7 +976,8 @@ public interface AsyncAdmin {
    * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
    * @return true if aborted, false if procedure already completed or does not exist. the value is
    *         wrapped by {@link CompletableFuture}
-   * @deprecated Since 2.1.1 -- to be removed.
+   * @deprecated since 2.1.1 and will be removed in 4.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21223">HBASE-21223</a>
    */
   @Deprecated
   CompletableFuture<Boolean> abortProcedure(long procId, boolean mayInterruptIfRunning);
@@ -1046,8 +1048,8 @@ public interface AsyncAdmin {
    * @return current live region servers list wrapped by {@link CompletableFuture}
    */
   default CompletableFuture<Collection<ServerName>> getRegionServers() {
-    return getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS))
-      .thenApply(cm -> cm.getLiveServerMetrics().keySet());
+    return getClusterMetrics(EnumSet.of(Option.SERVERS_NAME))
+        .thenApply(ClusterMetrics::getServersName);
   }
 
   /**
@@ -1482,4 +1484,27 @@ public interface AsyncAdmin {
   default CompletableFuture<List<Boolean>> hasUserPermissions(List<Permission> permissions) {
     return hasUserPermissions(null, permissions);
   }
+
+  /**
+   * Turn on or off the auto snapshot cleanup based on TTL.
+   * <p/>
+   * Notice that, the method itself is always non-blocking, which means it will always return
+   * immediately. The {@code sync} parameter only effects when will we complete the returned
+   * {@link CompletableFuture}.
+   *
+   * @param on Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @param sync If <code>true</code>, it waits until current snapshot cleanup is completed,
+   *   if outstanding.
+   * @return Previous auto snapshot cleanup value wrapped by a {@link CompletableFuture}.
+   */
+  CompletableFuture<Boolean> snapshotCleanupSwitch(boolean on, boolean sync);
+
+  /**
+   * Query the current state of the auto snapshot cleanup based on TTL.
+   *
+   * @return true if the auto snapshot cleanup is enabled, false otherwise.
+   *   The return value will be wrapped by a {@link CompletableFuture}.
+   */
+  CompletableFuture<Boolean> isSnapshotCleanupEnabled();
+
 }

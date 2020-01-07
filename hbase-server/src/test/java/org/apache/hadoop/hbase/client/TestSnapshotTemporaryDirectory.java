@@ -100,10 +100,11 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception on failure
    */
-  @BeforeClass public static void setupCluster() throws Exception {
+  @BeforeClass
+  public static void setupCluster() throws Exception {
     setupConf(UTIL.getConfiguration());
     UTIL.startMiniCluster(NUM_RS);
-    admin = UTIL.getHBaseAdmin();
+    admin = UTIL.getAdmin();
   }
 
   private static void setupConf(Configuration conf) {
@@ -124,7 +125,8 @@ public class TestSnapshotTemporaryDirectory {
     conf.set(SnapshotDescriptionUtils.SNAPSHOT_WORKING_DIR, "file://" + new Path(TEMP_DIR, ".tmpDir").toUri());
   }
 
-  @Before public void setup() throws Exception {
+  @Before
+  public void setup() throws Exception {
     HTableDescriptor htd = new HTableDescriptor(TABLE_NAME);
     htd.setRegionReplication(getNumReplicas());
     UTIL.createTable(htd, new byte[][] { TEST_FAM }, UTIL.getConfiguration());
@@ -134,13 +136,15 @@ public class TestSnapshotTemporaryDirectory {
     return 1;
   }
 
-  @After public void tearDown() throws Exception {
+  @After
+  public void tearDown() throws Exception {
     UTIL.deleteTable(TABLE_NAME);
-    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getHBaseAdmin());
+    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getAdmin());
     SnapshotTestingUtils.deleteArchiveDirectory(UTIL);
   }
 
-  @AfterClass public static void cleanupTest() {
+  @AfterClass
+  public static void cleanupTest() {
     try {
       UTIL.shutdownMiniCluster();
       FileUtils.deleteDirectory(new File(TEMP_DIR));
@@ -149,7 +153,8 @@ public class TestSnapshotTemporaryDirectory {
     }
   }
 
-  @Test(timeout = 180000) public void testRestoreDisabledSnapshot()
+  @Test
+  public void testRestoreDisabledSnapshot()
       throws IOException, InterruptedException {
     long tid = System.currentTimeMillis();
     TableName tableName = TableName.valueOf("testtb-" + tid);
@@ -215,7 +220,8 @@ public class TestSnapshotTemporaryDirectory {
     SnapshotTestingUtils.verifyReplicasCameOnline(tableName, admin, getNumReplicas());
   }
 
-  @Test(timeout = 180000) public void testRestoreEnabledSnapshot()
+  @Test
+  public void testRestoreEnabledSnapshot()
       throws IOException, InterruptedException {
     long tid = System.currentTimeMillis();
     TableName tableName = TableName.valueOf("testtb-" + tid);
@@ -282,8 +288,9 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception if snapshot does not complete successfully
    */
-  @Test(timeout = 300000) public void testOfflineTableSnapshot() throws Exception {
-    Admin admin = UTIL.getHBaseAdmin();
+  @Test
+  public void testOfflineTableSnapshot() throws Exception {
+    Admin admin = UTIL.getAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
@@ -336,7 +343,8 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception if snapshot does not complete successfully
    */
-  @Test(timeout = 180000) public void testSnapshotCloneContents() throws Exception {
+  @Test
+  public void testSnapshotCloneContents() throws Exception {
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
@@ -372,7 +380,8 @@ public class TestSnapshotTemporaryDirectory {
     admin.close();
   }
 
-  @Test(timeout = 180000) public void testOfflineTableSnapshotWithEmptyRegion() throws Exception {
+  @Test
+  public void testOfflineTableSnapshotWithEmptyRegion() throws Exception {
     // test with an empty table with one region
 
     // make sure we don't fail on listing snapshots
@@ -417,7 +426,7 @@ public class TestSnapshotTemporaryDirectory {
   }
 
   // Ensures that the snapshot is transferred to the proper completed snapshot directory
-  @Test(timeout = 180000)
+  @Test
   public void testEnsureTemporaryDirectoryTransfer() throws Exception {
     Admin admin = UTIL.getAdmin();
     TableName tableName2 = TableName.valueOf("testListTableSnapshots");
@@ -462,9 +471,8 @@ public class TestSnapshotTemporaryDirectory {
   private void takeSnapshot(TableName tableName, String snapshotName, boolean disabled)
       throws IOException {
     SnapshotType type = disabled ? SnapshotType.DISABLED : SnapshotType.FLUSH;
-    SnapshotDescription desc =
-        new SnapshotDescription(snapshotName, tableName.getNameAsString(), type, null, -1,
-            manifestVersion);
+    SnapshotDescription desc = new SnapshotDescription(snapshotName, tableName, type, null, -1,
+        manifestVersion, null);
     admin.snapshot(desc);
   }
 }

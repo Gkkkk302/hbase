@@ -24,6 +24,7 @@ import static org.junit.Assert.fail;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
@@ -45,15 +46,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TestSCPBase {
-
   private static final Logger LOG = LoggerFactory.getLogger(TestSCPBase.class);
+  static final int RS_COUNT = 3;
 
   protected HBaseTestingUtility util;
 
   protected void setupConf(Configuration conf) {
     conf.setInt(MasterProcedureConstants.MASTER_PROCEDURE_THREADS, 1);
     conf.set("hbase.balancer.tablesOnMaster", "none");
-    conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 3);
+    conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, RS_COUNT);
     conf.setInt(HConstants.HBASE_CLIENT_SERVERSIDE_RETRIES_MULTIPLIER, 3);
     conf.setBoolean("hbase.split.writer.creation.bounded", true);
     conf.setInt("hbase.regionserver.hlog.splitlog.writer.threads", 8);
@@ -154,7 +155,7 @@ public class TestSCPBase {
           rs.getRegionServer().getServerName());
         if (contains(regionInfos, r.getRegionInfo())) {
           LOG.error("Am exiting");
-          fail("Crashed replica regions should not be assigned to same region server");
+          fail("Replica regions should be assigned to different region servers");
         } else {
           regionInfos.add(r.getRegionInfo());
         }

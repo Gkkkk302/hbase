@@ -48,7 +48,6 @@ import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.TableName;
@@ -115,16 +114,6 @@ public class HFileOutputFormat2
     public TableInfo(TableDescriptor tableDesctiptor, RegionLocator regionLocator) {
       this.tableDesctiptor = tableDesctiptor;
       this.regionLocator = regionLocator;
-    }
-
-    /**
-     * The modification for the returned HTD doesn't affect the inner TD.
-     * @return A clone of inner table descriptor
-     * @deprecated use {@link #getTableDescriptor}
-     */
-    @Deprecated
-    public HTableDescriptor getHTableDescriptor() {
-      return new HTableDescriptor(tableDesctiptor);
     }
 
     public TableDescriptor getTableDescriptor() {
@@ -246,9 +235,9 @@ public class HFileOutputFormat2
       // Map of families to writers and how much has been output on the writer.
       private final Map<byte[], WriterLength> writers =
               new TreeMap<>(Bytes.BYTES_COMPARATOR);
-      private byte[] previousRow = HConstants.EMPTY_BYTE_ARRAY;
+      private final Map<byte[], byte[]> previousRows =
+              new TreeMap<>(Bytes.BYTES_COMPARATOR);
       private final long now = EnvironmentEdgeManager.currentTime();
-      private boolean rollRequested = false;
 
       @Override
       public void write(ImmutableBytesWritable row, V cell)
@@ -297,12 +286,9 @@ public class HFileOutputFormat2
           configureStoragePolicy(conf, fs, tableAndFamily, writerPath);
         }
 
-        if (wl != null && wl.written + length >= maxsize) {
-          this.rollRequested = true;
-        }
-
         // This can only happen once a row is finished though
-        if (rollRequested && Bytes.compareTo(this.previousRow, rowKey) != 0) {
+        if (wl != null && wl.written + length >= maxsize
+                && Bytes.compareTo(this.previousRows.get(family), rowKey) != 0) {
           rollWriters(wl);
         }
 
@@ -359,7 +345,7 @@ public class HFileOutputFormat2
         wl.written += length;
 
         // Copy the row so we know when a row transition.
-        this.previousRow = rowKey;
+        this.previousRows.put(family, rowKey);
       }
 
       private Path getTableRelativePath(byte[] tableNameBytes) {
@@ -379,7 +365,6 @@ public class HFileOutputFormat2
             closeWriter(wl);
           }
         }
-        this.rollRequested = false;
       }
 
       private void closeWriter(WriterLength wl) throws IOException {
@@ -427,7 +412,9 @@ public class HFileOutputFormat2
                                     .withCompression(compression)
                                     .withChecksumType(HStore.getChecksumType(conf))
                                     .withBytesPerCheckSum(HStore.getBytesPerChecksum(conf))
-                                    .withBlockSize(blockSize);
+                                    .withBlockSize(blockSize)
+                                    .withColumnFamily(family)
+                                    .withTableName(tableName);
 
         if (HFile.getFormatVersion(conf) >= HFile.MIN_FORMAT_VERSION_WITH_TAGS) {
           contextBuilder.withIncludesTags(true);
@@ -895,11 +882,6 @@ public class HFileOutputFormat2
   /**
    * Serialize column family to compression algorithm map to configuration.
    * Invoked while configuring the MR job for incremental load.
-   *
-   * @param tableDescriptor to read the properties from
-   * @param conf to persist serialized values into
-   * @throws IOException
-   *           on failure to read column family descriptors
    */
   @VisibleForTesting
   static Function<ColumnFamilyDescriptor, String> compressionDetails = familyDescriptor ->
@@ -908,14 +890,6 @@ public class HFileOutputFormat2
   /**
    * Serialize column family to block size map to configuration. Invoked while
    * configuring the MR job for incremental load.
-   *
-   * @param tableDescriptor
-   *          to read the properties from
-   * @param conf
-   *          to persist serialized values into
-   *
-   * @throws IOException
-   *           on failure to read column family descriptors
    */
   @VisibleForTesting
   static Function<ColumnFamilyDescriptor, String> blockSizeDetails = familyDescriptor -> String
@@ -924,14 +898,6 @@ public class HFileOutputFormat2
   /**
    * Serialize column family to bloom type map to configuration. Invoked while
    * configuring the MR job for incremental load.
-   *
-   * @param tableDescriptor
-   *          to read the properties from
-   * @param conf
-   *          to persist serialized values into
-   *
-   * @throws IOException
-   *           on failure to read column family descriptors
    */
   @VisibleForTesting
   static Function<ColumnFamilyDescriptor, String> bloomTypeDetails = familyDescriptor -> {
@@ -945,14 +911,6 @@ public class HFileOutputFormat2
   /**
    * Serialize column family to bloom param map to configuration. Invoked while
    * configuring the MR job for incremental load.
-   *
-   * @param tableDescriptor
-   *          to read the properties from
-   * @param conf
-   *          to persist serialized values into
-   *
-   * @throws IOException
-   *           on failure to read column family descriptors
    */
   @VisibleForTesting
   static Function<ColumnFamilyDescriptor, String> bloomParamDetails = familyDescriptor -> {
@@ -967,13 +925,6 @@ public class HFileOutputFormat2
   /**
    * Serialize column family to data block encoding map to configuration.
    * Invoked while configuring the MR job for incremental load.
-   *
-   * @param tableDescriptor
-   *          to read the properties from
-   * @param conf
-   *          to persist serialized values into
-   * @throws IOException
-   *           on failure to read column family descriptors
    */
   @VisibleForTesting
   static Function<ColumnFamilyDescriptor, String> dataBlockEncodingDetails = familyDescriptor -> {

@@ -41,14 +41,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
 import org.apache.hadoop.hbase.ipc.HBaseRpcController;
-import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.security.UserProvider;
+import org.apache.hadoop.hbase.ipc.ServerRpcController;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.hadoop.ipc.RemoteException;
@@ -57,18 +57,16 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 import org.apache.hbase.thirdparty.io.netty.util.Timer;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.ResponseConverter;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.AdminService;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.ClientService;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.ScanResponse;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.MasterService;
 
 /**
  * Utility used by client connections.
@@ -77,6 +75,12 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.MasterServ
 public final class ConnectionUtils {
 
   private static final Logger LOG = LoggerFactory.getLogger(ConnectionUtils.class);
+
+  /**
+   * Key for configuration in Configuration whose value is the class we implement making a new
+   * Connection instance.
+   */
+  public static final String HBASE_CLIENT_CONNECTION_IMPL = "hbase.client.connection.impl";
 
   private ConnectionUtils() {
   }
@@ -103,16 +107,6 @@ public final class ConnectionUtils {
   }
 
   /**
-   * @param conn The connection for which to replace the generator.
-   * @param cnm Replaces the nonce generator used, for testing.
-   * @return old nonce generator.
-   */
-  public static NonceGenerator injectNonceGeneratorForTesting(ClusterConnection conn,
-      NonceGenerator cnm) {
-    return ConnectionImplementation.injectNonceGeneratorForTesting(conn, cnm);
-  }
-
-  /**
    * Changes the configuration to set the number of retries needed when using Connection internally,
    * e.g. for updating catalog tables, etc. Call this method before we create any Connections.
    * @param c The Configuration instance to set the retries into.
@@ -130,93 +124,6 @@ public final class ConnectionUtils {
     int retries = hcRetries * serversideMultiplier;
     c.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, retries);
     log.info(sn + " server-side Connection retries=" + retries);
-  }
-
-  /**
-   * A ClusterConnection that will short-circuit RPC making direct invocations against the localhost
-   * if the invocation target is 'this' server; save on network and protobuf invocations.
-   */
-  // TODO This has to still do PB marshalling/unmarshalling stuff. Check how/whether we can avoid.
-  @VisibleForTesting // Class is visible so can assert we are short-circuiting when expected.
-  public static class ShortCircuitingClusterConnection extends ConnectionImplementation {
-    private final ServerName serverName;
-    private final AdminService.BlockingInterface localHostAdmin;
-    private final ClientService.BlockingInterface localHostClient;
-
-    private ShortCircuitingClusterConnection(Configuration conf, ExecutorService pool, User user,
-        ServerName serverName, AdminService.BlockingInterface admin,
-        ClientService.BlockingInterface client) throws IOException {
-      super(conf, pool, user);
-      this.serverName = serverName;
-      this.localHostAdmin = admin;
-      this.localHostClient = client;
-    }
-
-    @Override
-    public AdminService.BlockingInterface getAdmin(ServerName sn) throws IOException {
-      return serverName.equals(sn) ? this.localHostAdmin : super.getAdmin(sn);
-    }
-
-    @Override
-    public ClientService.BlockingInterface getClient(ServerName sn) throws IOException {
-      return serverName.equals(sn) ? this.localHostClient : super.getClient(sn);
-    }
-
-    @Override
-    public MasterKeepAliveConnection getMaster() throws IOException {
-      if (this.localHostClient instanceof MasterService.BlockingInterface) {
-        return new ShortCircuitMasterConnection(
-          (MasterService.BlockingInterface) this.localHostClient);
-      }
-      return super.getMaster();
-    }
-  }
-
-  /**
-   * Creates a short-circuit connection that can bypass the RPC layer (serialization,
-   * deserialization, networking, etc..) when talking to a local server.
-   * @param conf the current configuration
-   * @param pool the thread pool to use for batch operations
-   * @param user the user the connection is for
-   * @param serverName the local server name
-   * @param admin the admin interface of the local server
-   * @param client the client interface of the local server
-   * @return an short-circuit connection.
-   * @throws IOException if IO failure occurred
-   */
-  public static ClusterConnection createShortCircuitConnection(final Configuration conf,
-      ExecutorService pool, User user, final ServerName serverName,
-      final AdminService.BlockingInterface admin, final ClientService.BlockingInterface client)
-      throws IOException {
-    if (user == null) {
-      user = UserProvider.instantiate(conf).getCurrent();
-    }
-    return new ShortCircuitingClusterConnection(conf, pool, user, serverName, admin, client);
-  }
-
-  /**
-   * Setup the connection class, so that it will not depend on master being online. Used for testing
-   * @param conf configuration to set
-   */
-  @VisibleForTesting
-  public static void setupMasterlessConnection(Configuration conf) {
-    conf.set(ClusterConnection.HBASE_CLIENT_CONNECTION_IMPL, MasterlessConnection.class.getName());
-  }
-
-  /**
-   * Some tests shut down the master. But table availability is a master RPC which is performed on
-   * region re-lookups.
-   */
-  static class MasterlessConnection extends ConnectionImplementation {
-    MasterlessConnection(Configuration conf, ExecutorService pool, User user) throws IOException {
-      super(conf, pool, user);
-    }
-
-    @Override
-    public boolean isTableDisabled(TableName tableName) throws IOException {
-      // treat all tables as enabled
-      return false;
-    }
   }
 
   /**
@@ -545,7 +452,7 @@ public final class ConnectionUtils {
       TableName tableName, Query query, byte[] row, RegionLocateType locateType,
       Function<Integer, CompletableFuture<T>> requestReplica, long rpcTimeoutNs,
       long primaryCallTimeoutNs, Timer retryTimer, Optional<MetricsConnection> metrics) {
-    if (query.getConsistency() == Consistency.STRONG) {
+    if (query.getConsistency() != Consistency.TIMELINE) {
       return requestReplica.apply(RegionReplicaUtil.DEFAULT_REPLICA_ID);
     }
     // user specifies a replica id explicitly, just send request to the specific replica
@@ -694,5 +601,72 @@ public final class ConnectionUtils {
       optMetrics.ifPresent(
         metrics -> ResultStatsUtil.updateStats(metrics, serverName, regionName, regionLoadStats));
     });
+  }
+
+  @FunctionalInterface
+  interface Converter<D, I, S> {
+    D convert(I info, S src) throws IOException;
+  }
+
+  @FunctionalInterface
+  interface RpcCall<RESP, REQ> {
+    void call(ClientService.Interface stub, HBaseRpcController controller, REQ req,
+        RpcCallback<RESP> done);
+  }
+
+  static <REQ, PREQ, PRESP, RESP> CompletableFuture<RESP> call(HBaseRpcController controller,
+      HRegionLocation loc, ClientService.Interface stub, REQ req,
+      Converter<PREQ, byte[], REQ> reqConvert, RpcCall<PRESP, PREQ> rpcCall,
+      Converter<RESP, HBaseRpcController, PRESP> respConverter) {
+    CompletableFuture<RESP> future = new CompletableFuture<>();
+    try {
+      rpcCall.call(stub, controller, reqConvert.convert(loc.getRegion().getRegionName(), req),
+        new RpcCallback<PRESP>() {
+
+          @Override
+          public void run(PRESP resp) {
+            if (controller.failed()) {
+              future.completeExceptionally(controller.getFailed());
+            } else {
+              try {
+                future.complete(respConverter.convert(controller, resp));
+              } catch (IOException e) {
+                future.completeExceptionally(e);
+              }
+            }
+          }
+        });
+    } catch (IOException e) {
+      future.completeExceptionally(e);
+    }
+    return future;
+  }
+
+  static void shutdownPool(ExecutorService pool) {
+    pool.shutdown();
+    try {
+      if (!pool.awaitTermination(10, TimeUnit.SECONDS)) {
+        pool.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      pool.shutdownNow();
+    }
+  }
+
+  static void setCoprocessorError(com.google.protobuf.RpcController controller, Throwable error) {
+    if (controller == null) {
+      return;
+    }
+    if (controller instanceof ServerRpcController) {
+      if (error instanceof IOException) {
+        ((ServerRpcController) controller).setFailedOn((IOException) error);
+      } else {
+        ((ServerRpcController) controller).setFailedOn(new IOException(error));
+      }
+    } else if (controller instanceof ClientCoprocessorRpcController) {
+      ((ClientCoprocessorRpcController) controller).setFailed(error);
+    } else {
+      controller.setFailed(error.toString());
+    }
   }
 }

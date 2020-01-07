@@ -49,14 +49,14 @@ if [ -z "${revision}" ]; then
   revision="Unknown"
   url="file://$cwd"
 fi
-if ! [  -x "$(command -v md5sum)" ]; then
-  if ! [ -x "$(command -v md5)" ]; then
+if ! [  -x "$(command -v openssl)" ]; then
+  if ! [ -x "$(command -v gpg)" ]; then
     srcChecksum="Unknown"
   else
-    srcChecksum=`find hbase-*/src/main/ | grep -e "\.java" -e "\.proto" | LC_ALL=C sort | xargs md5 | md5 | cut -d ' ' -f 1`
+    srcChecksum=`find hbase-*/src/main/ | grep -e "\.java" -e "\.proto" | LC_ALL=C sort | xargs gpg --print-md sha512 | gpg --print-md sha512 | cut -d ' ' -f 1`
   fi
 else
-  srcChecksum=`find hbase-*/src/main/ | grep -e "\.java" -e "\.proto" | LC_ALL=C sort | xargs md5sum | md5sum | cut -d ' ' -f 1`
+  srcChecksum=`find hbase-*/src/main/ | grep -e "\.java" -e "\.proto" | LC_ALL=C sort | xargs openssl dgst -sha512 | openssl dgst -sha512 | cut -d ' ' -f 1`
 fi
 popd
 
@@ -70,8 +70,10 @@ package org.apache.hadoop.hbase;
 import org.apache.yetus.audience.InterfaceAudience;
 
 @InterfaceAudience.Private
+@edu.umd.cs.findbugs.annotations.SuppressWarnings(value="DM_STRING_CTOR",
+  justification="Intentional; to be modified in test")
 public class Version {
-  public static final String version = "$version";
+  public static final String version = new String("$version");
   public static final String revision = "$revision";
   public static final String user = "$user";
   public static final String date = "$date";

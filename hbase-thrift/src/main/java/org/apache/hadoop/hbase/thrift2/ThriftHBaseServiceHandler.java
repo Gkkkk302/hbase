@@ -84,6 +84,7 @@ import org.apache.hadoop.hbase.thrift2.generated.TRowMutations;
 import org.apache.hadoop.hbase.thrift2.generated.TScan;
 import org.apache.hadoop.hbase.thrift2.generated.TTableDescriptor;
 import org.apache.hadoop.hbase.thrift2.generated.TTableName;
+import org.apache.hadoop.hbase.thrift2.generated.TThriftServerType;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.thrift.TException;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -227,7 +228,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
   public List<Boolean> existsAll(ByteBuffer table, List<TGet> gets) throws TIOError, TException {
     Table htable = getTable(table);
     try {
-      boolean[] exists = htable.existsAll(getsFromThrift(gets));
+      boolean[] exists = htable.exists(getsFromThrift(gets));
       List<Boolean> result = new ArrayList<>(exists.length);
       for (boolean exist : exists) {
         result.add(exist);
@@ -626,7 +627,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
     try {
       TableDescriptor descriptor = tableDescriptorFromThrift(desc);
       byte[][] split = splitKeyFromThrift(splitKeys);
-      connectionCache.getAdmin().createTable(descriptor, split);
+      if (split != null) {
+        connectionCache.getAdmin().createTable(descriptor, split);
+      } else {
+        connectionCache.getAdmin().createTable(descriptor);
+      }
     } catch (IOException e) {
       throw getTIOError(e);
     }
@@ -805,6 +810,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
     } catch (IOException e) {
       throw getTIOError(e);
     }
+  }
+
+  @Override
+  public TThriftServerType getThriftServerType() {
+    return TThriftServerType.TWO;
   }
 
   @Override

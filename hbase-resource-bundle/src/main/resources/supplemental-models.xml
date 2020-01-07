@@ -996,6 +996,21 @@ Copyright 2010 FasterXML.com
   </supplement>
 
   <supplement>
+    <project> <!-- hadoop.profile=3.0 from hadoop-3.3.0 -->
+      <groupId>net.java.dev.jna</groupId>
+      <artifactId>jna</artifactId>
+      <version>5.2.0</version>
+      <licenses>
+        <license>
+          <name>Apache License, Version 2.0</name>
+          <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+
+  <supplement>
     <project>
       <groupId>org.jruby.jcodings</groupId>
       <artifactId>jcodings</artifactId>
@@ -1920,6 +1935,162 @@ Copyright (c) 2007-2017 The JRuby project
           <!-- It has been incorrectly called Apache 2.0 in the original pom-->
           <name>Apache License, Version 2.0</name>
           <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>jakarta.activation</groupId>
+      <artifactId>jakarta.activation-api</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>jakarta.annotation</groupId>
+      <artifactId>jakarta.annotation-api</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Public License 2.0</name>
+          <url>https://www.eclipse.org/legal/epl-v20.html</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>jakarta.mail</groupId>
+      <artifactId>jakarta.mail-api</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Public License 2.0</name>
+          <url>https://www.eclipse.org/legal/epl-v20.html</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.external</groupId>
+      <artifactId>management-api</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.gmbal</groupId>
+      <artifactId>gmbal</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.ha</groupId>
+      <artifactId>ha-api</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Public License 2.0</name>
+          <url>https://www.eclipse.org/legal/epl-v20.html</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-asm</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-basic</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-basic-tools</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-dynamic</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-tf</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
+  <supplement>
+    <project>
+      <groupId>org.glassfish.pfl</groupId>
+      <artifactId>pfl-tf-tools</artifactId>
+      <licenses>
+        <license>
+          <name>Eclipse Distribution License 1.0</name>
+          <url>http://www.eclipse.org/org/documents/edl-v10.php</url>
           <distribution>repo</distribution>
         </license>
       </licenses>

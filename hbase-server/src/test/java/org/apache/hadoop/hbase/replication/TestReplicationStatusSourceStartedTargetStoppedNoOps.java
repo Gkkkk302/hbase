@@ -41,11 +41,11 @@ public class TestReplicationStatusSourceStartedTargetStoppedNoOps extends TestRe
     HBaseClassTestRule.forClass(TestReplicationStatusSourceStartedTargetStoppedNoOps.class);
 
   @Test
-  public void c() throws Exception {
-    utility2.shutdownMiniHBaseCluster();
-    restartHBaseCluster(utility1, NUM_SLAVES1);
-    Admin hbaseAdmin = utility1.getAdmin();
-    ServerName serverName = utility1.getHBaseCluster().getRegionServer(0).getServerName();
+  public void testReplicationStatusSourceStartedTargetStoppedNoOps() throws Exception {
+    UTIL2.shutdownMiniHBaseCluster();
+    restartHBaseCluster(UTIL1, 1);
+    Admin hbaseAdmin = UTIL1.getAdmin();
+    ServerName serverName = UTIL1.getHBaseCluster().getRegionServer(0).getServerName();
     Thread.sleep(10000);
     ClusterMetrics metrics = hbaseAdmin.getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS));
     List<ReplicationLoadSource> loadSources =

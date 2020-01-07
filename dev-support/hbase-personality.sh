@@ -31,7 +31,7 @@
 # test-patch  --plugins=all,-hadoopcheck --personality=dev-support/hbase-personality.sh HBASE-15074
 # ````
 #
-# pass the `--jenkins` flag if you want to allow test-patch to destructively alter local working
+# pass the `--sentinel` flag if you want to allow test-patch to destructively alter local working
 # directory / branch in order to have things match what the issue patch requests.
 
 personality_plugins "all"
@@ -44,6 +44,23 @@ if ! declare -f "yetus_info" >/dev/null; then
   }
 
 fi
+
+# work around yetus overwriting JAVA_HOME from our docker image
+function docker_do_env_adds
+{
+  declare k
+
+  for k in "${DOCKER_EXTRAENVS[@]}"; do
+    if [[ "JAVA_HOME" == "${k}" ]]; then
+      if [ -n "${JAVA_HOME}" ]; then
+        DOCKER_EXTRAARGS+=("--env=JAVA_HOME=${JAVA_HOME}")
+      fi
+    else
+      DOCKER_EXTRAARGS+=("--env=${k}=${!k}")
+    fi
+  done
+}
+
 
 ## @description  Globals specific to this personality
 ## @audience     private
@@ -86,15 +103,19 @@ function personality_parse_args
   for i in "$@"; do
     case ${i} in
       --exclude-tests-url=*)
+        delete_parameter "${i}"
         EXCLUDE_TESTS_URL=${i#*=}
       ;;
       --include-tests-url=*)
+        delete_parameter "${i}"
         INCLUDE_TESTS_URL=${i#*=}
       ;;
       --hadoop-profile=*)
+        delete_parameter "${i}"
         HADOOP_PROFILE=${i#*=}
       ;;
       --skip-errorprone)
+        delete_parameter "${i}"
         SKIP_ERRORPRONE=true
       ;;
     esac
@@ -111,6 +132,8 @@ function personality_modules
   local repostatus=$1
   local testtype=$2
   local extra=""
+  local branch1jdk8=()
+  local jdk8module=""
   local MODULES=("${CHANGED_MODULES[@]}")
 
   yetus_info "Personality: ${repostatus} ${testtype}"
@@ -149,6 +172,21 @@ function personality_modules
     return
   fi
 
+  # This list should include any modules that require jdk8. Maven should be configured to only
+  # include them when a proper JDK is in use, but that doesn' work if we specifically ask for the
+  # module to build as yetus does if something changes in the module.  Rather than try to
+  # figure out what jdk is in use so we can duplicate the module activation logic, just
+  # build at the top level if anything changes in one of these modules and let maven sort it out.
+  branch1jdk8=(hbase-error-prone hbase-tinylfu-blockcache)
+  if [[ "${PATCH_BRANCH}" = branch-1* ]]; then
+    for jdk8module in "${branch1jdk8[@]}"; do
+      if [[ "${MODULES[*]}" =~ ${jdk8module} ]]; then
+        MODULES=(.)
+        break
+      fi
+    done
+  fi
+
   if [[ ${testtype} == findbugs ]]; then
     # Run findbugs on each module individually to diff pre-patch and post-patch results and
     # report new warnings for changed modules only.
@@ -169,7 +207,8 @@ function personality_modules
     return
   fi
 
-  if [[ ${testtype} == compile ]] && [[ "${SKIP_ERRORPRONE}" != "true" ]]; then
+  if [[ ${testtype} == compile ]] && [[ "${SKIP_ERRORPRONE}" != "true" ]] &&
+      [[ "${PATCH_BRANCH}" != branch-1* ]] ; then
     extra="${extra} -PerrorProne"
   fi
 
@@ -462,6 +501,7 @@ function hadoopcheck_parse_args
   for i in "$@"; do
     case ${i} in
       --quick-hadoopcheck)
+        delete_parameter "${i}"
         QUICK_HADOOPCHECK=true
       ;;
     esac
@@ -504,12 +544,19 @@ function hadoopcheck_rebuild
 
   # All supported Hadoop versions that we want to test the compilation with
   # See the Hadoop section on prereqs in the HBase Reference Guide
-  if [[ "${PATCH_BRANCH}" = branch-1.* ]] && [[ "${PATCH_BRANCH#branch-1.}" -lt "5" ]]; then
-    yetus_info "Setting Hadoop 2 versions to test based on before-branch-1.5 rules."
+  if [[ "${PATCH_BRANCH}" = branch-1.* ]] && [[ "${PATCH_BRANCH#branch-1.}" -lt "4" ]]; then
+    yetus_info "Setting Hadoop 2 versions to test based on before-branch-1.4 rules."
     if [[ "${QUICK_HADOOPCHECK}" == "true" ]]; then
       hbase_hadoop2_versions="2.4.1 2.5.2 2.6.5 2.7.7"
     else
       hbase_hadoop2_versions="2.4.0 2.4.1 2.5.0 2.5.1 2.5.2 2.6.1 2.6.2 2.6.3 2.6.4 2.6.5 2.7.1 2.7.2 2.7.3 2.7.4 2.7.5 2.7.6 2.7.7"
+    fi
+  elif [[ "${PATCH_BRANCH}" = branch-1.4 ]]; then
+    yetus_info "Setting Hadoop 2 versions to test based on branch-1.4 rules."
+    if [[ "${QUICK_HADOOPCHECK}" == "true" ]]; then
+      hbase_hadoop2_versions="2.7.7"
+    else
+      hbase_hadoop2_versions="2.7.1 2.7.2 2.7.3 2.7.4 2.7.5 2.7.6 2.7.7"
     fi
   elif [[ "${PATCH_BRANCH}" = branch-2.0 ]]; then
     yetus_info "Setting Hadoop 2 versions to test based on branch-2.0 rules."
@@ -526,22 +573,29 @@ function hadoopcheck_rebuild
       hbase_hadoop2_versions="2.7.1 2.7.2 2.7.3 2.7.4 2.7.5 2.7.6 2.7.7 2.8.2 2.8.3 2.8.4 2.8.5"
     fi
   else
-    yetus_info "Setting Hadoop 2 versions to test based on branch-1.5+/branch-2.1+/master/feature branch rules."
+    yetus_info "Setting Hadoop 2 versions to test based on branch-1.5+/branch-2.2+/master/feature branch rules."
     if [[ "${QUICK_HADOOPCHECK}" == "true" ]]; then
       hbase_hadoop2_versions="2.8.5 2.9.2"
     else
-      hbase_hadoop2_versions="2.8.2 2.8.3 2.8.4 2.8.5 2.9.1 2.9.2"
+      hbase_hadoop2_versions="2.8.5 2.9.2"
     fi
   fi
   if [[ "${PATCH_BRANCH}" = branch-1* ]]; then
     yetus_info "Setting Hadoop 3 versions to test based on branch-1.x rules."
     hbase_hadoop3_versions=""
-  else
-    yetus_info "Setting Hadoop 3 versions to test based on branch-2.x/master/feature branch rules"
+  elif [[ "${PATCH_BRANCH}" = branch-2.0 ]] || [[ "${PATCH_BRANCH}" = branch-2.1 ]]; then
+    yetus_info "Setting Hadoop 3 versions to test based on branch-2.0/branch-2.1 rules"
     if [[ "${QUICK_HADOOPCHECK}" == "true" ]]; then
       hbase_hadoop3_versions="3.0.3 3.1.2"
     else
       hbase_hadoop3_versions="3.0.3 3.1.1 3.1.2"
+    fi
+  else
+    yetus_info "Setting Hadoop 3 versions to test based on branch-2.2+/master/feature branch rules"
+    if [[ "${QUICK_HADOOPCHECK}" == "true" ]]; then
+      hbase_hadoop3_versions="3.1.2"
+    else
+      hbase_hadoop3_versions="3.1.1 3.1.2"
     fi
   fi
 

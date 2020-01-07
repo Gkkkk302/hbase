@@ -34,6 +34,13 @@ import org.apache.yetus.audience.InterfaceAudience;
  */
 @InterfaceAudience.Private
 public class HFileContext implements HeapSize, Cloneable {
+  public static final int FIXED_OVERHEAD = ClassSize.align(ClassSize.OBJECT +
+      // Algorithm, checksumType, encoding, Encryption.Context, hfileName reference,
+      5 * ClassSize.REFERENCE + 2 * Bytes.SIZEOF_INT +
+      // usesHBaseChecksum, includesMvcc, includesTags and compressTags
+      4 * Bytes.SIZEOF_BOOLEAN + Bytes.SIZEOF_LONG +
+      //byte[] headers for column family and table name
+      2 * ClassSize.ARRAY + 2 * ClassSize.REFERENCE);
 
   public static final int DEFAULT_BYTES_PER_CHECKSUM = 16 * 1024;
 
@@ -58,6 +65,8 @@ public class HFileContext implements HeapSize, Cloneable {
   private Encryption.Context cryptoContext = Encryption.Context.NONE;
   private long fileCreateTime;
   private String hfileName;
+  private byte[] columnFamily;
+  private byte[] tableName;
 
   //Empty constructor.  Go with setters
   public HFileContext() {
@@ -80,12 +89,15 @@ public class HFileContext implements HeapSize, Cloneable {
     this.cryptoContext = context.cryptoContext;
     this.fileCreateTime = context.fileCreateTime;
     this.hfileName = context.hfileName;
+    this.columnFamily = context.columnFamily;
+    this.tableName = context.tableName;
   }
 
   HFileContext(boolean useHBaseChecksum, boolean includesMvcc, boolean includesTags,
-      Compression.Algorithm compressAlgo, boolean compressTags, ChecksumType checksumType,
-      int bytesPerChecksum, int blockSize, DataBlockEncoding encoding,
-      Encryption.Context cryptoContext, long fileCreateTime, String hfileName) {
+               Compression.Algorithm compressAlgo, boolean compressTags, ChecksumType checksumType,
+               int bytesPerChecksum, int blockSize, DataBlockEncoding encoding,
+               Encryption.Context cryptoContext, long fileCreateTime, String hfileName,
+               byte[] columnFamily, byte[] tableName) {
     this.usesHBaseChecksum = useHBaseChecksum;
     this.includesMvcc =  includesMvcc;
     this.includesTags = includesTags;
@@ -100,6 +112,8 @@ public class HFileContext implements HeapSize, Cloneable {
     this.cryptoContext = cryptoContext;
     this.fileCreateTime = fileCreateTime;
     this.hfileName = hfileName;
+    this.columnFamily = columnFamily;
+    this.tableName = tableName;
   }
 
   /**
@@ -187,22 +201,29 @@ public class HFileContext implements HeapSize, Cloneable {
     return this.hfileName;
   }
 
+  public byte[] getColumnFamily() {
+    return this.columnFamily;
+  }
+
+  public byte[] getTableName() {
+    return this.tableName;
+  }
   /**
-   * HeapSize implementation
-   * NOTE : The heapsize should be altered as and when new state variable are added
+   * HeapSize implementation. NOTE : The heap size should be altered when new state variable are
+   * added.
    * @return heap size of the HFileContext
    */
   @Override
   public long heapSize() {
-    long size = ClassSize.align(ClassSize.OBJECT +
-        // Algorithm reference, encodingon, checksumtype, Encryption.Context reference
-        5 * ClassSize.REFERENCE +
-        2 * Bytes.SIZEOF_INT +
-        // usesHBaseChecksum, includesMvcc, includesTags and compressTags
-        4 * Bytes.SIZEOF_BOOLEAN +
-        Bytes.SIZEOF_LONG);
+    long size = FIXED_OVERHEAD;
     if (this.hfileName != null) {
       size += ClassSize.STRING + this.hfileName.length();
+    }
+    if (this.columnFamily != null){
+      size += ClassSize.sizeOfByteArray(this.columnFamily.length);
+    }
+    if (this.tableName != null){
+      size += ClassSize.sizeOfByteArray(this.tableName.length);
     }
     return size;
   }
@@ -233,6 +254,14 @@ public class HFileContext implements HeapSize, Cloneable {
     if (hfileName != null) {
       sb.append(", name=");
       sb.append(hfileName);
+    }
+    if (tableName != null) {
+      sb.append(", tableName=");
+      sb.append(Bytes.toStringBinary(tableName));
+    }
+    if (columnFamily != null) {
+      sb.append(", columnFamily=");
+      sb.append(Bytes.toStringBinary(columnFamily));
     }
     sb.append("]");
     return sb.toString();

@@ -263,6 +263,7 @@ public final class PermissionStorage {
   static void removeTablePermissions(Configuration conf, TableName tableName, Table t)
       throws IOException{
     Delete d = new Delete(tableName.getName());
+    d.addFamily(ACL_LIST_FAMILY);
 
     if (LOG.isDebugEnabled()) {
       LOG.debug("Removing permissions of removed table "+ tableName);
@@ -280,7 +281,7 @@ public final class PermissionStorage {
   static void removeNamespacePermissions(Configuration conf, String namespace, Table t)
       throws IOException{
     Delete d = new Delete(Bytes.toBytes(toNamespaceEntry(namespace)));
-
+    d.addFamily(ACL_LIST_FAMILY);
     if (LOG.isDebugEnabled()) {
       LOG.debug("Removing permissions of removed namespace "+ namespace);
     }
@@ -505,6 +506,11 @@ public final class PermissionStorage {
       String namespace) throws IOException {
     return getPermissions(conf, Bytes.toBytes(toNamespaceEntry(namespace)), null, null, null, null,
       false);
+  }
+
+  public static ListMultimap<String, UserPermission> getGlobalPermissions(Configuration conf)
+      throws IOException {
+    return getPermissions(conf, null, null, null, null, null, false);
   }
 
   /**
@@ -839,15 +845,19 @@ public final class PermissionStorage {
   }
 
   public static boolean isGlobalEntry(byte[] entryName) {
-    return entryName != null && TableName.valueOf(entryName).equals(ACL_TABLE_NAME);
+    return Bytes.equals(entryName, ACL_GLOBAL_NAME);
   }
 
   public static boolean isNamespaceEntry(String entryName) {
-    return entryName != null && entryName.charAt(0) == NAMESPACE_PREFIX;
+    return isNamespaceEntry(Bytes.toBytes(entryName));
   }
 
   public static boolean isNamespaceEntry(byte[] entryName) {
     return entryName != null && entryName.length !=0 && entryName[0] == NAMESPACE_PREFIX;
+  }
+
+  public static boolean isTableEntry(byte[] entryName) {
+    return !isNamespaceEntry(entryName) && !isGlobalEntry(entryName) && entryName != null;
   }
 
   public static String toNamespaceEntry(String namespace) {

@@ -29,7 +29,7 @@ import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
@@ -162,7 +162,7 @@ public class MockNoopMasterServices implements MasterServices {
   }
 
   @Override
-  public ClusterConnection getConnection() {
+  public Connection getConnection() {
     return null;
   }
 
@@ -354,11 +354,6 @@ public class MockNoopMasterServices implements MasterServices {
   }
 
   @Override
-  public ClusterConnection getClusterConnection() {
-    return null;
-  }
-
-  @Override
   public LoadBalancer getLoadBalancer() {
     return null;
   }
@@ -485,4 +480,17 @@ public class MockNoopMasterServices implements MasterServices {
   public ZKPermissionWatcher getZKPermissionWatcher() {
     return null;
   }
+
+  @Override
+  public List<RegionPlan> executeRegionPlansWithThrottling(List<RegionPlan> plans) {
+    return null;
+  }
+
+  @Override
+  public AsyncClusterConnection getAsyncClusterConnection() {
+    return null;
+  }
+
+  @Override
+  public void runReplicationBarrierCleaner() {}
 }

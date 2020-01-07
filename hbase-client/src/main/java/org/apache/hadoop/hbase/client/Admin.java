@@ -125,6 +125,14 @@ public interface Admin extends Abortable, Closeable {
   List<TableDescriptor> listTableDescriptors() throws IOException;
 
   /**
+   * List all userspace tables and whether or not include system tables.
+   *
+   * @return a list of TableDescriptors
+   * @throws IOException if a remote or network exception occurs
+   */
+  List<TableDescriptor> listTableDescriptors(boolean includeSysTables) throws IOException;
+
+  /**
    * List all the userspace tables that match the given pattern.
    *
    * @param pattern The compiled regular expression to match against
@@ -255,13 +263,14 @@ public interface Admin extends Abortable, Closeable {
   Future<Void> createTableAsync(TableDescriptor desc) throws IOException;
 
   /**
-   * Creates a new table but does not block and wait for it to come online. You can use
-   * Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
-   * ExecutionException if there was an error while executing the operation or TimeoutException in
-   * case the wait timeout was not long enough to allow the operation to complete.
-   * <p/>
-   * Throws IllegalArgumentException Bad table name, if the split keys are repeated and if the split
-   * key has empty byte array.
+   * Creates a new table but does not block and wait for it to come online.
+   * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
+   * It may throw ExecutionException if there was an error while executing the operation
+   * or TimeoutException in case the wait timeout was not long enough to allow the
+   * operation to complete.
+   * Throws IllegalArgumentException Bad table name, if the split keys
+   *    are repeated and if the split key has empty byte array.
+   *
    * @param desc table descriptor for table
    * @param splitKeys keys to check if the table has been created with all split keys
    * @throws IOException if a remote or network exception occurs
@@ -708,8 +717,10 @@ public interface Admin extends Abortable, Closeable {
    *          array we'll assign to a random server. A server name is made of host, port and
    *          startcode. Here is an example: <code> host187.example.com,60020,1289493121758</code>
    * @throws IOException if we can't find a region named <code>encodedRegionName</code>
-   * @deprecated Use {@link #move(byte[], ServerName)} instead. And if you want to move the region
-   *             to a random server, please use {@link #move(byte[])}.
+   * @deprecated since 2.2.0 and will be removed in 4.0.0. Use {@link #move(byte[], ServerName)}
+   *   instead. And if you want to move the region to a random server, please use
+   *   {@link #move(byte[])}.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-22108">HBASE-22108</a>
    */
   @Deprecated
   default void move(byte[] encodedRegionName, byte[] destServerName) throws IOException {
@@ -721,7 +732,7 @@ public interface Admin extends Abortable, Closeable {
   }
 
   /**
-   * Move the region <code>rencodedRegionName</code> to <code>destServerName</code>.
+   * Move the region <code>encodedRegionName</code> to <code>destServerName</code>.
    * @param encodedRegionName The encoded region name; i.e. the hash that makes up the region name
    *          suffix: e.g. if regionname is
    *          <code>TestTable,0094429456,1289497600452.527db22f95c8a9e0116f0cc13c680396.</code>,
@@ -920,15 +931,13 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Split a table. The method will execute split action for each region in table.
-   * Asynchronous operation.
    * @param tableName table to split
    * @throws IOException if a remote or network exception occurs
    */
   void split(TableName tableName) throws IOException;
 
   /**
-   * Split a table. Asynchronous operation.
-   *
+   * Split a table.
    * @param tableName table to split
    * @param splitPoint the explicit position to split on
    * @throws IOException if a remote or network exception occurs
@@ -1053,7 +1062,7 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   default Collection<ServerName> getRegionServers() throws IOException {
-    return getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS)).getLiveServerMetrics().keySet();
+    return getClusterMetrics(EnumSet.of(Option.SERVERS_NAME)).getServersName();
   }
 
   /**
@@ -1063,9 +1072,7 @@ public interface Admin extends Abortable, Closeable {
    * @return a {@link RegionMetrics} list of all regions hosted on a region server
    * @throws IOException if a remote or network exception occurs
    */
-  default List<RegionMetrics> getRegionMetrics(ServerName serverName) throws IOException {
-    return getRegionMetrics(serverName, null);
-  }
+  List<RegionMetrics> getRegionMetrics(ServerName serverName) throws IOException;
 
   /**
    * Get {@link RegionMetrics} of all regions hosted on a regionserver for a table.
@@ -1213,7 +1220,8 @@ public interface Admin extends Abortable, Closeable {
    * @return <code>true</code> if aborted, <code>false</code> if procedure already completed or does
    *         not exist
    * @throws IOException if a remote or network exception occurs
-   * @deprecated Since 2.1.1 -- to be removed.
+   * @deprecated since 2.1.1 and will be removed in 4.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21223">HBASE-21223</a>
    */
   @Deprecated
   default boolean abortProcedure(long procId, boolean mayInterruptIfRunning) throws IOException {
@@ -1233,7 +1241,8 @@ public interface Admin extends Abortable, Closeable {
    * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
    * @return <code>true</code> if aborted, <code>false</code> if procedure already completed or does not exist
    * @throws IOException if a remote or network exception occurs
-   * @deprecated Since 2.1.1 -- to be removed.
+   * @deprecated since 2.1.1 and will be removed in 4.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21223">HBASE-21223</a>
    */
   @Deprecated
   Future<Boolean> abortProcedureAsync(long procId, boolean mayInterruptIfRunning)
@@ -1333,9 +1342,10 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Take a snapshot for the given table. If the table is enabled, a FLUSH-type snapshot will be
-   * taken. If the table is disabled, an offline snapshot is taken. Snapshots are considered unique
-   * based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same name (even
-   * a different type or with different parameters) will fail with a
+   * taken. If the table is disabled, an offline snapshot is taken. Snapshots are taken
+   * sequentially even when requested concurrently, across all tables. Snapshots are considered
+   * unique based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same
+   * name (even a different type or with different parameters) will fail with a
    * {@link org.apache.hadoop.hbase.snapshot.SnapshotCreationException} indicating the duplicate
    * naming. Snapshot names follow the same naming constraints as tables in HBase. See
    * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
@@ -1352,7 +1362,8 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Create typed snapshot of the table. Snapshots are considered unique based on <b>the name of the
-   * snapshot</b>. Attempts to take a snapshot with the same name (even a different type or with
+   * snapshot</b>. Snapshots are taken sequentially even when requested concurrently, across
+   * all tables. Attempts to take a snapshot with the same name (even a different type or with
    * different parameters) will fail with a {@link SnapshotCreationException} indicating the
    * duplicate naming. Snapshot names follow the same naming constraints as tables in HBase. See
    * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
@@ -1370,13 +1381,59 @@ public interface Admin extends Abortable, Closeable {
   }
 
   /**
-   * Take a snapshot and wait for the server to complete that snapshot (blocking). Only a single
-   * snapshot should be taken at a time for an instance of HBase, or results may be undefined (you
-   * can tell multiple HBase clusters to snapshot at the same time, but only one at a time for a
-   * single cluster). Snapshots are considered unique based on <b>the name of the snapshot</b>.
-   * Attempts to take a snapshot with the same name (even a different type or with different
-   * parameters) will fail with a {@link SnapshotCreationException} indicating the duplicate naming.
-   * Snapshot names follow the same naming constraints as tables in HBase. See
+   * Create typed snapshot of the table. Snapshots are considered unique based on <b>the name of the
+   * snapshot</b>. Snapshots are taken sequentially even when requested concurrently, across
+   * all tables. Attempts to take a snapshot with the same name (even a different type or with
+   * different parameters) will fail with a {@link SnapshotCreationException} indicating the
+   * duplicate naming. Snapshot names follow the same naming constraints as tables in HBase. See
+   * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
+   * Snapshot can live with ttl seconds.
+   *
+   * @param snapshotName  name to give the snapshot on the filesystem. Must be unique from all other
+   *                      snapshots stored on the cluster
+   * @param tableName     name of the table to snapshot
+   * @param type          type of snapshot to take
+   * @param snapshotProps snapshot additional properties e.g. TTL
+   * @throws IOException               we fail to reach the master
+   * @throws SnapshotCreationException if snapshot creation failed
+   * @throws IllegalArgumentException  if the snapshot request is formatted incorrectly
+   */
+  default void snapshot(String snapshotName, TableName tableName, SnapshotType type,
+                        Map<String, Object> snapshotProps) throws IOException,
+      SnapshotCreationException, IllegalArgumentException {
+    snapshot(new SnapshotDescription(snapshotName, tableName, type, snapshotProps));
+  }
+
+  /**
+   * Create typed snapshot of the table. Snapshots are considered unique based on <b>the name of the
+   * snapshot</b>. Snapshots are taken sequentially even when requested concurrently, across
+   * all tables. Attempts to take a snapshot with the same name (even a different type or with
+   * different parameters) will fail with a {@link SnapshotCreationException} indicating the
+   * duplicate naming. Snapshot names follow the same naming constraints as tables in HBase. See
+   * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
+   * Snapshot can live with ttl seconds.
+   *
+   * @param snapshotName  name to give the snapshot on the filesystem. Must be unique from all other
+   *                      snapshots stored on the cluster
+   * @param tableName     name of the table to snapshot
+   * @param snapshotProps snapshot additional properties e.g. TTL
+   * @throws IOException               we fail to reach the master
+   * @throws SnapshotCreationException if snapshot creation failed
+   * @throws IllegalArgumentException  if the snapshot request is formatted incorrectly
+   */
+  default void snapshot(String snapshotName, TableName tableName,
+                        Map<String, Object> snapshotProps) throws IOException,
+      SnapshotCreationException, IllegalArgumentException {
+    snapshot(new SnapshotDescription(snapshotName, tableName, SnapshotType.FLUSH, snapshotProps));
+  }
+
+  /**
+   * Take a snapshot and wait for the server to complete that snapshot (blocking). Snapshots are
+   * considered unique based on <b>the name of the snapshot</b>. Snapshots are taken sequentially
+   * even when requested concurrently, across all tables. Attempts to take a snapshot with the same
+   * name (even a different type or with different parameters) will fail with a
+   * {@link SnapshotCreationException} indicating the duplicate naming. Snapshot names follow the
+   * same naming constraints as tables in HBase. See
    * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}. You should
    * probably use {@link #snapshot(String, org.apache.hadoop.hbase.TableName)} unless you are sure
    * about the type of snapshot that you want to take.
@@ -1389,8 +1446,9 @@ public interface Admin extends Abortable, Closeable {
       throws IOException, SnapshotCreationException, IllegalArgumentException;
 
   /**
-   * Take a snapshot without waiting for the server to complete that snapshot (asynchronous) Only a
-   * single snapshot should be taken at a time, or results may be undefined.
+   * Take a snapshot without waiting for the server to complete that snapshot (asynchronous).
+   * Snapshots are considered unique based on <b>the name of the snapshot</b>. Snapshots are taken
+   * sequentially even when requested concurrently, across all tables.
    *
    * @param snapshot snapshot to take
    * @throws IOException if the snapshot did not succeed or we lose contact with the master.
@@ -1654,7 +1712,10 @@ public interface Admin extends Abortable, Closeable {
    * </pre></blockquote></div>
    *
    * @return A MasterCoprocessorRpcChannel instance
+   * @deprecated since 3.0.0, will removed in 4.0.0. This is too low level, please stop using it any
+   *             more. Use the coprocessorService methods in {@link AsyncAdmin} instead.
    */
+  @Deprecated
   CoprocessorRpcChannel coprocessorService();
 
 
@@ -1679,7 +1740,10 @@ public interface Admin extends Abortable, Closeable {
    *
    * @param serverName the server name to which the endpoint call is made
    * @return A RegionServerCoprocessorRpcChannel instance
+   * @deprecated since 3.0.0, will removed in 4.0.0. This is too low level, please stop using it any
+   *             more. Use the coprocessorService methods in {@link AsyncAdmin} instead.
    */
+  @Deprecated
   CoprocessorRpcChannel coprocessorService(ServerName serverName);
 
 
@@ -2176,4 +2240,26 @@ public interface Admin extends Abortable, Closeable {
   default List<Boolean> hasUserPermissions(List<Permission> permissions) throws IOException {
     return hasUserPermissions(null, permissions);
   }
+
+  /**
+   * Turn on or off the auto snapshot cleanup based on TTL.
+   *
+   * @param on Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @param synchronous If <code>true</code>, it waits until current snapshot cleanup is completed,
+   *   if outstanding.
+   * @return Previous auto snapshot cleanup value
+   * @throws IOException if a remote or network exception occurs
+   */
+  boolean snapshotCleanupSwitch(final boolean on, final boolean synchronous)
+      throws IOException;
+
+  /**
+   * Query the current state of the auto snapshot cleanup based on TTL.
+   *
+   * @return <code>true</code> if the auto snapshot cleanup is enabled,
+   *   <code>false</code> otherwise.
+   * @throws IOException if a remote or network exception occurs
+   */
+  boolean isSnapshotCleanupEnabled() throws IOException;
+
 }

@@ -288,7 +288,7 @@ EOF
         ttl = args[TTL]
         set_op_ttl(append, ttl) if ttl
       end
-      append.add(family, qualifier, value.to_s.to_java_bytes)
+      append.addColumn(family, qualifier, value.to_s.to_java_bytes)
       result = @table.append(append)
       return nil if result.isEmpty
 
@@ -717,7 +717,7 @@ EOF
 
     # Returns a list of column names in the table
     def get_all_columns
-      @table.table_descriptor.getFamilies.map do |family|
+      @table.descriptor.getColumnFamilies.map do |family|
         "#{family.getNameAsString}:"
       end
     end
@@ -741,7 +741,7 @@ EOF
         if column == 'info:regioninfo' || column == 'info:splitA' || column == 'info:splitB'
           hri = org.apache.hadoop.hbase.HRegionInfo.parseFromOrNull(kv.getValueArray,
                                                                     kv.getValueOffset, kv.getValueLength)
-          return format('timestamp=%d, value=%s', kv.getTimestamp, hri.toString)
+          return format('timestamp=%d, value=%s', kv.getTimestamp, hri.nil? ? '' : hri.toString)
         end
         if column == 'info:serverstartcode'
           if kv.getValueLength > 0
@@ -816,7 +816,7 @@ EOF
       locator = @table.getRegionLocator
       locator.getAllRegionLocations
              .select { |s| RegionReplicaUtil.isDefaultReplica(s.getRegion) }
-             .map { |i| Bytes.toStringBinary(i.getRegionInfo.getStartKey) }
+             .map { |i| Bytes.toStringBinary(i.getRegion.getStartKey) }
              .delete_if { |k| k == '' }
     ensure
       locator.close

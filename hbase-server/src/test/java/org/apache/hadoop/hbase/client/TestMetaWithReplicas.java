@@ -206,7 +206,7 @@ public class TestMetaWithReplicas {
     }
     byte[] row = Bytes.toBytes("test");
     ServerName master = null;
-    try (Connection c = ConnectionFactory.createConnection(conf)) {
+    try (Connection c = ConnectionFactory.createConnection(util.getConfiguration())) {
       try (Table htable = util.createTable(TABLE, FAMILIES)) {
         util.getAdmin().flush(TableName.META_TABLE_NAME);
         Thread.sleep(
@@ -335,8 +335,9 @@ public class TestMetaWithReplicas {
   public void testShutdownOfReplicaHolder() throws Exception {
     // checks that the when the server holding meta replica is shut down, the meta replica
     // can be recovered
-    try (Connection conn = ConnectionFactory.createConnection(TEST_UTIL.getConfiguration());
-        RegionLocator locator = conn.getRegionLocator(TableName.META_TABLE_NAME)) {
+    try (
+      Connection conn = ConnectionFactory.createConnection(TEST_UTIL.getConfiguration());
+      RegionLocator locator = conn.getRegionLocator(TableName.META_TABLE_NAME)) {
       HRegionLocation hrl = locator.getRegionLocations(HConstants.EMPTY_START_ROW, true).get(1);
       ServerName oldServer = hrl.getServerName();
       TEST_UTIL.getHBaseClusterInterface().killRegionServer(oldServer);

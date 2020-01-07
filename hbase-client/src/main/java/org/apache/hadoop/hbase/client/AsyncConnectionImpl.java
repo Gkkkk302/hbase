@@ -28,12 +28,14 @@ import static org.apache.hadoop.hbase.client.NonceGenerator.CLIENT_NONCES_ENABLE
 import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import java.io.IOException;
+import java.net.SocketAddress;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -87,7 +89,7 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   private final int rpcTimeout;
 
-  private final RpcClient rpcClient;
+  protected final RpcClient rpcClient;
 
   final RpcControllerFactory rpcControllerFactory;
 
@@ -112,14 +114,16 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   private ChoreService authService;
 
-  private volatile boolean closed = false;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
 
   private final Optional<MetricsConnection> metrics;
 
   private final ClusterStatusListener clusterStatusListener;
 
+  private volatile ConnectionOverAsyncConnection conn;
+
   public AsyncConnectionImpl(Configuration conf, AsyncRegistry registry, String clusterId,
-      User user) {
+      SocketAddress localAddress, User user) {
     this.conf = conf;
     this.user = user;
     if (user.isLoginFromKeytab()) {
@@ -132,7 +136,7 @@ class AsyncConnectionImpl implements AsyncConnection {
     } else {
       this.metrics = Optional.empty();
     }
-    this.rpcClient = RpcClientFactory.createClient(conf, clusterId, metrics.orElse(null));
+    this.rpcClient = RpcClientFactory.createClient(conf, clusterId, localAddress, metrics.orElse(null));
     this.rpcControllerFactory = RpcControllerFactory.instantiate(conf);
     this.hostnameCanChange = conf.getBoolean(RESOLVE_HOSTNAME_ON_FAIL_KEY, true);
     this.rpcTimeout =
@@ -184,10 +188,13 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   @Override
+  public boolean isClosed() {
+    return closed.get();
+  }
+
+  @Override
   public void close() {
-    // As the code below is safe to be executed in parallel, here we do not use CAS or lock, just a
-    // simple volatile flag.
-    if (closed) {
+    if (!closed.compareAndSet(false, true)) {
       return;
     }
     IOUtils.closeQuietly(clusterStatusListener);
@@ -197,17 +204,20 @@ class AsyncConnectionImpl implements AsyncConnection {
       authService.shutdown();
     }
     metrics.ifPresent(MetricsConnection::shutdown);
-    closed = true;
-  }
-
-  @Override
-  public boolean isClosed() {
-    return closed;
+    ConnectionOverAsyncConnection c = this.conn;
+    if (c != null) {
+      c.closePool();
+    }
   }
 
   @Override
   public AsyncTableRegionLocator getRegionLocator(TableName tableName) {
     return new AsyncTableRegionLocatorImpl(tableName, this);
+  }
+
+  @Override
+  public void clearRegionLocationCache() {
+    locator.clearCache();
   }
 
   // we will override this method for testing retry caller, so do not remove this method.
@@ -216,8 +226,7 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   // ditto
-  @VisibleForTesting
-  public NonceGenerator getNonceGenerator() {
+  NonceGenerator getNonceGenerator() {
     return nonceGenerator;
   }
 
@@ -340,6 +349,23 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   @Override
+  public Connection toConnection() {
+    ConnectionOverAsyncConnection c = this.conn;
+    if (c != null) {
+      return c;
+    }
+    synchronized (this) {
+      c = this.conn;
+      if (c != null) {
+        return c;
+      }
+      c = new ConnectionOverAsyncConnection(this);
+      this.conn = c;
+    }
+    return c;
+  }
+
+  @Override
   public CompletableFuture<Hbck> getHbck() {
     CompletableFuture<Hbck> future = new CompletableFuture<>();
     addListener(registry.getMasterAddress(), (sn, error) -> {
@@ -363,11 +389,6 @@ class AsyncConnectionImpl implements AsyncConnection {
     // time instead of caching the stub here.
     return new HBaseHbck(MasterProtos.HbckService.newBlockingStub(
       rpcClient.createBlockingRpcChannel(masterServer, user, rpcTimeout)), rpcControllerFactory);
-  }
-
-  @Override
-  public void clearRegionLocationCache() {
-    locator.clearCache();
   }
 
   Optional<MetricsConnection> getConnectionMetrics() {
