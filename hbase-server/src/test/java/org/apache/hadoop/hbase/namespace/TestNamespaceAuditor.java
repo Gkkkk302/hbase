@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -32,7 +32,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,11 +39,10 @@ import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Admin;
@@ -81,7 +79,7 @@ import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionLifeCycleTracker;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
 import org.apache.hadoop.hbase.snapshot.RestoreSnapshotException;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.zookeeper.KeeperException;
@@ -94,7 +92,7 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@Category(MediumTests.class)
+@Category(LargeTests.class)
 public class TestNamespaceAuditor {
 
   @ClassRule
@@ -117,7 +115,8 @@ public class TestNamespaceAuditor {
     conf.setBoolean(QuotaUtil.QUOTA_CONF_KEY, true);
     conf.setClass("hbase.coprocessor.regionserver.classes", CPRegionServerObserver.class,
       RegionServerObserver.class);
-    UTIL.startMiniCluster();
+    StartMiniClusterOption option = StartMiniClusterOption.builder().numMasters(2).build();
+    UTIL.startMiniCluster(option);
     waitForQuotaInitialize(UTIL);
     ADMIN = UTIL.getAdmin();
   }
@@ -345,9 +344,11 @@ public class TestNamespaceAuditor {
     ADMIN.createNamespace(nspDesc);
     final TableName tableTwo = TableName.valueOf(nsp1 + TableName.NAMESPACE_DELIM + "table2");
     byte[] columnFamily = Bytes.toBytes("info");
-    HTableDescriptor tableDescOne = new HTableDescriptor(tableTwo);
-    tableDescOne.addFamily(new HColumnDescriptor(columnFamily));
-    ADMIN.createTable(tableDescOne, Bytes.toBytes("0"), Bytes.toBytes("9"), initialRegions);
+    TableDescriptorBuilder.ModifyableTableDescriptor tableDescriptor =
+      new TableDescriptorBuilder.ModifyableTableDescriptor(tableTwo);
+    tableDescriptor.setColumnFamily(
+      new ColumnFamilyDescriptorBuilder.ModifyableColumnFamilyDescriptor(columnFamily));
+    ADMIN.createTable(tableDescriptor, Bytes.toBytes("0"), Bytes.toBytes("9"), initialRegions);
     Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
     try (Table table = connection.getTable(tableTwo)) {
       UTIL.loadNumericRows(table, Bytes.toBytes("info"), 1000, 1999);
@@ -441,12 +442,15 @@ public class TestNamespaceAuditor {
     ADMIN.createNamespace(nspDesc);
     final TableName tableOne = TableName.valueOf(nsp1 + TableName.NAMESPACE_DELIM + "table1");
     byte[] columnFamily = Bytes.toBytes("info");
-    HTableDescriptor tableDescOne = new HTableDescriptor(tableOne);
-    tableDescOne.addFamily(new HColumnDescriptor(columnFamily));
+    TableDescriptorBuilder.ModifyableTableDescriptor tableDescriptor =
+      new TableDescriptorBuilder.ModifyableTableDescriptor(tableOne);
+
+    tableDescriptor.setColumnFamily(
+      new ColumnFamilyDescriptorBuilder.ModifyableColumnFamilyDescriptor(columnFamily));
     MasterSyncObserver.throwExceptionInPreCreateTableAction = true;
     try {
       try {
-        ADMIN.createTable(tableDescOne);
+        ADMIN.createTable(tableDescriptor);
         fail("Table " + tableOne.toString() + "creation should fail.");
       } catch (Exception exp) {
         LOG.error(exp.toString(), exp);
@@ -459,7 +463,7 @@ public class TestNamespaceAuditor {
 
       MasterSyncObserver.throwExceptionInPreCreateTableAction = false;
       try {
-        ADMIN.createTable(tableDescOne);
+        ADMIN.createTable(tableDescriptor);
       } catch (Exception e) {
         fail("Table " + tableOne.toString() + "creation should succeed.");
         LOG.error(e.toString(), e);
@@ -481,17 +485,6 @@ public class TestNamespaceAuditor {
   private NamespaceTableAndRegionInfo getNamespaceState(String namespace) throws KeeperException,
       IOException {
     return getQuotaManager().getState(namespace);
-  }
-
-  byte[] getSplitKey(byte[] startKey, byte[] endKey) {
-    String skey = Bytes.toString(startKey);
-    int key;
-    if (StringUtils.isBlank(skey)) {
-      key = Integer.parseInt(Bytes.toString(endKey))/2 ;
-    } else {
-      key = (int) (Integer.parseInt(skey) * 1.5);
-    }
-    return Bytes.toBytes("" + key);
   }
 
   public static class CustomObserver implements RegionCoprocessor, RegionObserver {
@@ -546,11 +539,11 @@ public class TestNamespaceAuditor {
     UTIL.waitFor(1000, new Waiter.Predicate<Exception>() {
       @Override
       public boolean evaluate() throws Exception {
-       return (getNamespaceState(nsp1).getTables().size() == 2);
+        return (getNamespaceState(nsp1).getTables().size() == 2);
       }
     });
     NamespaceTableAndRegionInfo before = getNamespaceState(nsp1);
-    restartMaster();
+    killActiveMaster();
     NamespaceTableAndRegionInfo after = getNamespaceState(nsp1);
     assertEquals("Expected: " + before.getTables() + " Found: " + after.getTables(), before
         .getTables().size(), after.getTables().size());
@@ -570,10 +563,9 @@ public class TestNamespaceAuditor {
     });
   }
 
-  private void restartMaster() throws Exception {
+  private void killActiveMaster() throws Exception {
     UTIL.getHBaseCluster().getMaster(0).stop("Stopping to start again");
     UTIL.getHBaseCluster().waitOnMaster(0);
-    UTIL.getHBaseCluster().startMaster();
     waitForQuotaInitialize(UTIL);
   }
 

@@ -18,10 +18,6 @@
  */
 package org.apache.hadoop.hbase.client;
 
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.Message;
-import com.google.protobuf.Service;
-import com.google.protobuf.ServiceException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collections;
@@ -36,10 +32,16 @@ import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
+import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors;
+import org.apache.hbase.thirdparty.com.google.protobuf.Message;
+import org.apache.hbase.thirdparty.com.google.protobuf.Service;
+import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
 /**
  * Used to communicate with a single HBase table.
@@ -355,6 +357,53 @@ public interface Table extends Closeable {
      * @return {@code true} if the new delete was executed, {@code false} otherwise.
      */
     boolean thenDelete(Delete delete) throws IOException;
+
+    /**
+     * @param mutation mutations to perform if check succeeds
+     * @return true if the new mutation was executed, false otherwise.
+     */
+    boolean thenMutate(RowMutations mutation) throws IOException;
+  }
+
+  /**
+   * Atomically checks if a row matches the specified filter. If it does, it adds the
+   * Put/Delete/RowMutations.
+   * <p>
+   * Use the returned {@link CheckAndMutateWithFilterBuilder} to construct your request and then
+   * execute it. This is a fluent style API, the code is like:
+   *
+   * <pre>
+   * <code>
+   * table.checkAndMutate(row, filter).thenPut(put);
+   * </code>
+   * </pre>
+   */
+  default CheckAndMutateWithFilterBuilder checkAndMutate(byte[] row, Filter filter) {
+    throw new NotImplementedException("Add an implementation!");
+  }
+
+  /**
+   * A helper class for sending checkAndMutate request with a filter.
+   */
+  interface CheckAndMutateWithFilterBuilder {
+
+    /**
+     * @param timeRange timeRange to check
+     */
+    CheckAndMutateWithFilterBuilder timeRange(TimeRange timeRange);
+
+    /**
+     * @param put data to put if check succeeds
+     * @return {@code true} if the new put was executed, {@code false} otherwise.
+     */
+    boolean thenPut(Put put) throws IOException;
+
+    /**
+     * @param delete data to delete if check succeeds
+     * @return {@code true} if the new delete was executed, {@code false} otherwise.
+     */
+    boolean thenDelete(Delete delete) throws IOException;
+
     /**
      * @param mutation mutations to perform if check succeeds
      * @return true if the new mutation was executed, false otherwise.

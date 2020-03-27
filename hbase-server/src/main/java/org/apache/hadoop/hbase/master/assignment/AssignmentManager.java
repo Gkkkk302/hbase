@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HBaseIOException;
@@ -42,6 +43,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.UnknownRegionException;
 import org.apache.hadoop.hbase.client.DoNotRetryRegionException;
+import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.RegionStatesCount;
@@ -70,6 +72,7 @@ import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.procedure2.ProcedureInMemoryChore;
 import org.apache.hadoop.hbase.procedure2.util.StringUtils;
 import org.apache.hadoop.hbase.regionserver.SequenceId;
+import org.apache.hadoop.hbase.rsgroup.RSGroupBasedLoadBalancer;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.HasThread;
@@ -327,6 +330,11 @@ public class AssignmentManager {
     return master.getLoadBalancer();
   }
 
+  private FavoredNodesPromoter getFavoredNodePromoter() {
+    return (FavoredNodesPromoter) ((RSGroupBasedLoadBalancer) master.getLoadBalancer())
+      .getInternalBalancer();
+  }
+
   private MasterProcedureEnv getProcedureEnvironment() {
     return master.getMasterProcedureExecutor().getEnvironment();
   }
@@ -370,7 +378,7 @@ public class AssignmentManager {
 
   public List<ServerName> getFavoredNodes(final RegionInfo regionInfo) {
     return this.shouldAssignRegionsWithFavoredNodes
-      ? ((FavoredStochasticBalancer) getBalancer()).getFavoredNodes(regionInfo)
+      ? getFavoredNodePromoter().getFavoredNodes(regionInfo)
       : ServerName.EMPTY_SERVER_LIST;
   }
 
@@ -686,7 +694,7 @@ public class AssignmentManager {
         this.master.getServerManager().createDestinationServersList(serversToExclude));
       // Return mid-method!
       return createAssignProcedures(assignments);
-    } catch (HBaseIOException hioe) {
+    } catch (IOException hioe) {
       LOG.warn("Failed roundRobinAssignment", hioe);
     }
     // If an error above, fall-through to this simpler assign. Last resort.
@@ -1007,6 +1015,12 @@ public class AssignmentManager {
         " hriA=" + hriA + " hriB=" + hriB);
     }
 
+    if (!master.isSplitOrMergeEnabled(MasterSwitchType.SPLIT)) {
+      LOG.warn("Split switch is off! skip split of " + parent);
+      throw new DoNotRetryIOException("Split region " + parent.getRegionNameAsString() +
+          " failed due to split switch off");
+    }
+
     // Submit the Split procedure
     final byte[] splitKey = hriB.getStartKey();
     if (LOG.isDebugEnabled()) {
@@ -1030,6 +1044,12 @@ public class AssignmentManager {
       throw new UnexpectedStateException("Unsupported merge regionState=" + state +
         " for regionA=" + hriA + " regionB=" + hriB + " merged=" + merged +
         " maybe an old RS (< 2.0) had the operation in progress");
+    }
+
+    if (!master.isSplitOrMergeEnabled(MasterSwitchType.MERGE)) {
+      LOG.warn("Merge switch is off! skip merge of regionA=" + hriA + " regionB=" + hriB);
+      throw new DoNotRetryIOException("Merge of regionA=" + hriA + " regionB=" + hriB +
+        " failed because merge switch is off");
     }
 
     // Submit the Merge procedure
@@ -1819,8 +1839,8 @@ public class AssignmentManager {
     regionStateStore.splitRegion(parent, daughterA, daughterB, serverName);
     if (shouldAssignFavoredNodes(parent)) {
       List<ServerName> onlineServers = this.master.getServerManager().getOnlineServersList();
-      ((FavoredNodesPromoter)getBalancer()).
-          generateFavoredNodesForDaughter(onlineServers, parent, daughterA, daughterB);
+      getFavoredNodePromoter().generateFavoredNodesForDaughter(onlineServers, parent, daughterA,
+        daughterB);
     }
   }
 
@@ -1845,8 +1865,7 @@ public class AssignmentManager {
     }
     regionStateStore.mergeRegions(child, mergeParents, serverName);
     if (shouldAssignFavoredNodes(child)) {
-      ((FavoredNodesPromoter)getBalancer()).
-        generateFavoredNodesForMergedRegion(child, mergeParents);
+      getFavoredNodePromoter().generateFavoredNodesForMergedRegion(child, mergeParents);
     }
   }
 
@@ -2044,7 +2063,7 @@ public class AssignmentManager {
       }
       try {
         acceptPlan(regions, balancer.retainAssignment(retainMap, servers));
-      } catch (HBaseIOException e) {
+      } catch (IOException e) {
         LOG.warn("unable to retain assignment", e);
         addToPendingAssignment(regions, retainMap.keySet());
       }
@@ -2059,7 +2078,7 @@ public class AssignmentManager {
       }
       try {
         acceptPlan(regions, balancer.roundRobinAssignment(hris, servers));
-      } catch (HBaseIOException e) {
+      } catch (IOException e) {
         LOG.warn("unable to round-robin assignment", e);
         addToPendingAssignment(regions, hris);
       }

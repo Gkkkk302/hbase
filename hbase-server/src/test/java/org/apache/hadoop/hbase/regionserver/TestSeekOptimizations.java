@@ -127,7 +127,7 @@ public class TestSeekOptimizations {
 
   private long totalSeekDiligent, totalSeekLazy;
 
-  private final static HBaseTestingUtility TEST_UTIL = HBaseTestingUtility.createLocalHTU();
+  private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   @Parameters
   public static final Collection<Object[]> parameters() {
@@ -215,7 +215,7 @@ public class TestSeekOptimizations {
       qualSet.add(qualStr);
     }
     scan.setMaxVersions(maxVersions);
-    scan.setStartRow(rowBytes(startRow));
+    scan.withStartRow(rowBytes(startRow));
 
     // Adjust for the fact that for multi-row queries the end row is exclusive.
     {

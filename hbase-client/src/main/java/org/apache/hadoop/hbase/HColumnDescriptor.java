@@ -113,7 +113,7 @@ public class HColumnDescriptor implements ColumnFamilyDescriptor, Comparable<HCo
    */
   @Deprecated
   public HColumnDescriptor(final String familyName) {
-    this(Bytes.toBytes(familyName));
+    this(new ModifyableColumnFamilyDescriptor(Bytes.toBytes(familyName)));
   }
 
   /**
@@ -153,23 +153,6 @@ public class HColumnDescriptor implements ColumnFamilyDescriptor, Comparable<HCo
 
   protected HColumnDescriptor(ModifyableColumnFamilyDescriptor delegate) {
     this.delegatee = delegate;
-  }
-
-  /**
-   * @param b Family name.
-   * @return <code>b</code>
-   * @throws IllegalArgumentException If not null and not a legitimate family
-   * name: i.e. 'printable' and ends in a ':' (Null passes are allowed because
-   * <code>b</code> can be null when deserializing).  Cannot start with a '.'
-   * either. Also Family can not be an empty value or equal "recovered.edits".
-   * @deprecated since 2.0.0 and will be removed in 3.0.0. Use
-   *   {@link ColumnFamilyDescriptorBuilder#isLegalColumnFamilyName(byte[])} instead.
-   * @see ColumnFamilyDescriptorBuilder#isLegalColumnFamilyName(byte[])
-   * @see <a href="https://issues.apache.org/jira/browse/HBASE-18008">HBASE-18008</a>
-   */
-  @Deprecated
-  public static byte [] isLegalFamilyName(final byte [] b) {
-    return ColumnFamilyDescriptorBuilder.isLegalColumnFamilyName(b);
   }
 
   /**
