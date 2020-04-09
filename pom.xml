@@ -70,7 +70,6 @@
     <module>hbase-thrift</module>
     <module>hbase-shell</module>
     <module>hbase-protocol-shaded</module>
-    <module>hbase-protocol</module>
     <module>hbase-client</module>
     <module>hbase-hadoop-compat</module>
     <module>hbase-common</module>
@@ -1589,20 +1588,27 @@
     <!-- default: run small & medium, medium with 2 threads -->
     <surefire.skipFirstPart>false</surefire.skipFirstPart>
     <surefire.skipSecondPart>false</surefire.skipSecondPart>
-    <!-- Fork count varies w/ CPU count. Setting is conservative. Up this
+      <!-- Fork count varies w/ CPU count. Setting is conservative mostly determined
+        by what apache jenkins nightly builds will tolerate (See HBASE-24072). Up this
       value is you want to burn through tests faster (could make for more failures
       if more contention around resources). There is a matching MAVEN_ARG
-      in our yetus personality where we set the maven -T command to 0.5C too.
+      in our yetus personality where we set the maven -T command to 0.25C too.
+      For example, to run at a rate that is more furious than our 0.25C, do
+      something like this:
+         f="0.5C" ;  mvn -T$f -Dsurefire.firstPartForkCount=$f -Dsurefire.secondPartForkCount=$f test -PrunAllTests
     -->
-    <surefire.firstPartForkCount>0.5C</surefire.firstPartForkCount>
-    <surefire.secondPartForkCount>0.5C</surefire.secondPartForkCount>
+    <surefire.firstPartForkCount>0.25C</surefire.firstPartForkCount>
+    <surefire.secondPartForkCount>0.25C</surefire.secondPartForkCount>
     <surefire.firstPartGroups>org.apache.hadoop.hbase.testclassification.SmallTests</surefire.firstPartGroups>
     <surefire.secondPartGroups>org.apache.hadoop.hbase.testclassification.MediumTests</surefire.secondPartGroups>
     <surefire.testFailureIgnore>false</surefire.testFailureIgnore>
     <test.output.tofile>true</test.output.tofile>
     <surefire.timeout>900</surefire.timeout>
     <test.exclude.pattern></test.exclude.pattern>
-    <!-- default Xmx value is 2800m. Use -Dsurefire.Xmx=xxg to run tests with different JVM Xmx value -->
+    <!--
+      default Xmx value is 2800m. Use -Dsurefire.Xmx=xxg to run tests with different JVM Xmx value.
+      this value is managed separately for jdk11.
+    -->
     <surefire.Xmx>2800m</surefire.Xmx>
     <surefire.cygwinXmx>2800m</surefire.cygwinXmx>
     <!--Mark our test runs with '-Dhbase.build.id' so we can identify a surefire test as ours in a process listing
@@ -1680,11 +1686,6 @@
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-protocol-shaded</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.hbase</groupId>
-        <artifactId>hbase-protocol</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -2404,6 +2405,15 @@
       <properties>
         <!-- TODO: replicate logic for windows support -->
         <argLine>--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED ${hbase-surefire.argLine}</argLine>
+        <!-- We need a minimum HDFS version of 3.2.0 for HADOOP-12760 -->
+        <hadoop-three.version>3.2.0</hadoop-three.version>
+        <!--
+          JDK11 appears to consume more heap than JDK8 does; OOME are more common in
+          -PrunLargeTests on this platform. Bump up heap allocated to tests (current default for
+          JDK8 is 2800m.
+          TODO: replicate logic for windows
+        -->
+        <surefire.Xmx>3200m</surefire.Xmx>
       </properties>
       <build>
         <plugins>
