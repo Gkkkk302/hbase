@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.TimeZone;
 import java.util.TreeMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClusterMetrics;
@@ -48,6 +49,7 @@ import org.apache.hadoop.hbase.master.balancer.StochasticLoadBalancer.ServerLoca
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -174,7 +176,8 @@ public class TestStochasticLoadBalancer extends BalancerTestBase {
           Map<TableName, Map<ServerName, List<RegionInfo>>> LoadOfAllTable =
               (Map) mockClusterServersWithTables(servers);
           List<RegionPlan> plans = loadBalancer.balanceCluster(LoadOfAllTable);
-          assertTrue(plans == null || plans.isEmpty());
+          boolean emptyPlans = plans == null || plans.isEmpty();
+          assertTrue(emptyPlans || needsBalanceIdleRegion(mockCluster));
         }
       }
     } finally {
@@ -200,6 +203,32 @@ public class TestStochasticLoadBalancer extends BalancerTestBase {
       double expected = 1 - expectedLocalities[test];
       assertEquals(expected, cost, 0.001);
     }
+  }
+
+  @Test
+  public void testMoveCostMultiplier() throws Exception {
+    Configuration conf = HBaseConfiguration.create();
+    StochasticLoadBalancer.CostFunction
+      costFunction = new StochasticLoadBalancer.MoveCostFunction(conf);
+    BaseLoadBalancer.Cluster cluster = mockCluster(clusterStateMocks[0]);
+    costFunction.init(cluster);
+    costFunction.cost();
+    assertEquals(StochasticLoadBalancer.MoveCostFunction.DEFAULT_MOVE_COST,
+      costFunction.getMultiplier(), 0.01);
+
+    // In offpeak hours, the multiplier of move cost should be lower
+    conf.setInt("hbase.offpeak.start.hour",0);
+    conf.setInt("hbase.offpeak.end.hour",23);
+    // Set a fixed time which hour is 15, so it will always in offpeak
+    // See HBASE-24898 for more info of the calculation here
+    long deltaFor15 = TimeZone.getDefault().getRawOffset() - 28800000;
+    long timeFor15 = 1597907081000L - deltaFor15;
+    EnvironmentEdgeManager.injectEdge(() -> timeFor15);
+    costFunction = new StochasticLoadBalancer.MoveCostFunction(conf);
+    costFunction.init(cluster);
+    costFunction.cost();
+    assertEquals(StochasticLoadBalancer.MoveCostFunction.DEFAULT_MOVE_COST_OFFPEAK
+      , costFunction.getMultiplier(), 0.01);
   }
 
   @Test
@@ -393,6 +422,10 @@ public class TestStochasticLoadBalancer extends BalancerTestBase {
     assertTrue(Arrays.
             asList(loadBalancer.getCostFunctionNames()).
             contains(DummyCostFunction.class.getSimpleName()));
+  }
+
+  private boolean needsBalanceIdleRegion(int[] cluster){
+    return (Arrays.stream(cluster).anyMatch(x -> x>1)) && (Arrays.stream(cluster).anyMatch(x -> x<1));
   }
 
   // This mock allows us to test the LocalityCostFunction

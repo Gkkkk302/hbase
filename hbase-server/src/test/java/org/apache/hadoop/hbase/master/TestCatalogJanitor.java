@@ -25,6 +25,8 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
@@ -53,11 +55,11 @@ import org.apache.hadoop.hbase.master.assignment.MockMasterServices;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.regionserver.ChunkCreator;
 import org.apache.hadoop.hbase.regionserver.HStore;
-import org.apache.hadoop.hbase.regionserver.MemStoreLABImpl;
+import org.apache.hadoop.hbase.regionserver.MemStoreLAB;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.zookeeper.KeeperException;
 import org.junit.After;
@@ -86,7 +88,8 @@ public class TestCatalogJanitor {
 
   @BeforeClass
   public static void beforeClass() throws Exception {
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
   }
 
   @Before
@@ -123,7 +126,7 @@ public class TestCatalogJanitor {
     Result r = createResult(parent, splita, splitb);
     // Add a reference under splitA directory so we don't clear out the parent.
     Path rootdir = this.masterServices.getMasterFileSystem().getRootDir();
-    Path tabledir = FSUtils.getTableDir(rootdir, td.getTableName());
+    Path tabledir = CommonFSUtils.getTableDir(rootdir, td.getTableName());
     Path parentdir = new Path(tabledir, parent.getEncodedName());
     Path storedir = HStore.getStoreHomedir(tabledir, splita, td.getColumnFamilies()[0].getName());
     Reference ref = Reference.createTopReference(Bytes.toBytes("ccc"));
@@ -438,8 +441,8 @@ public class TestCatalogJanitor {
     // have to set the root directory since we use it in HFileDisposer to figure out to get to the
     // archive directory. Otherwise, it just seems to pick the first root directory it can find (so
     // the single test passes, but when the full suite is run, things get borked).
-    FSUtils.setRootDir(fs.getConf(), rootdir);
-    Path tabledir = FSUtils.getTableDir(rootdir, td.getTableName());
+    CommonFSUtils.setRootDir(fs.getConf(), rootdir);
+    Path tabledir = CommonFSUtils.getTableDir(rootdir, td.getTableName());
     Path storedir = HStore.getStoreHomedir(tabledir, parent, td.getColumnFamilies()[0].getName());
     Path storeArchive =
         HFileArchiveUtil.getStoreArchivePath(this.masterServices.getConfiguration(), parent,
@@ -476,7 +479,7 @@ public class TestCatalogJanitor {
     assertArchiveEqualToOriginal(storeFiles, archivedStoreFiles, fs);
 
     // cleanup
-    FSUtils.delete(fs, rootdir, true);
+    CommonFSUtils.delete(fs, rootdir, true);
   }
 
   /**
@@ -513,8 +516,8 @@ public class TestCatalogJanitor {
     // Have to set the root directory since we use it in HFileDisposer to figure out to get to the
     // archive directory. Otherwise, it just seems to pick the first root directory it can find (so
     // the single test passes, but when the full suite is run, things get borked).
-    FSUtils.setRootDir(fs.getConf(), rootdir);
-    Path tabledir = FSUtils.getTableDir(rootdir, parent.getTable());
+    CommonFSUtils.setRootDir(fs.getConf(), rootdir);
+    Path tabledir = CommonFSUtils.getTableDir(rootdir, parent.getTable());
     Path storedir = HStore.getStoreHomedir(tabledir, parent, td.getColumnFamilies()[0].getName());
     System.out.println("Old root:" + rootdir);
     System.out.println("Old table:" + tabledir);
@@ -554,6 +557,29 @@ public class TestCatalogJanitor {
     assertArchiveEqualToOriginal(storeFiles, archivedStoreFiles, fs, true);
   }
 
+  @Test
+  public void testAlreadyRunningStatus() throws Exception {
+    int numberOfThreads = 2;
+    List<Integer> gcValues = new ArrayList<>();
+    Thread[] threads = new Thread[numberOfThreads];
+    for (int i = 0; i < numberOfThreads; i++) {
+      threads[i] = new Thread(() -> {
+        try {
+          gcValues.add(janitor.scan());
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
+      });
+    }
+    for (int i = 0; i < numberOfThreads; i++) {
+      threads[i].start();
+    }
+    for (int i = 0; i < numberOfThreads; i++) {
+      threads[i].join();
+    }
+    assertTrue("One janitor.scan() call should have returned -1", gcValues.contains(-1));
+  }
+
   private FileStatus[] addMockStoreFiles(int count, MasterServices services, Path storedir)
       throws IOException {
     // get the existing store files
@@ -578,8 +604,8 @@ public class TestCatalogJanitor {
     Path testdir = htu.getDataTestDir(subdir);
     FileSystem fs = FileSystem.get(htu.getConfiguration());
     if (fs.exists(testdir)) assertTrue(fs.delete(testdir, true));
-    FSUtils.setRootDir(htu.getConfiguration(), testdir);
-    return FSUtils.getRootDir(htu.getConfiguration()).toString();
+    CommonFSUtils.setRootDir(htu.getConfiguration(), testdir);
+    return CommonFSUtils.getRootDir(htu.getConfiguration()).toString();
   }
 
   private Path createReferences(final MasterServices services,
@@ -587,7 +613,7 @@ public class TestCatalogJanitor {
       final HRegionInfo daughter, final byte [] midkey, final boolean top)
   throws IOException {
     Path rootdir = services.getMasterFileSystem().getRootDir();
-    Path tabledir = FSUtils.getTableDir(rootdir, parent.getTable());
+    Path tabledir = CommonFSUtils.getTableDir(rootdir, parent.getTable());
     Path storedir = HStore.getStoreHomedir(tabledir, daughter,
       td.getColumnFamilies()[0].getName());
     Reference ref =

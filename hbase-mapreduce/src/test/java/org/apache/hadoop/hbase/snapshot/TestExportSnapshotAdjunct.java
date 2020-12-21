@@ -35,6 +35,7 @@ import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -48,6 +49,7 @@ import org.slf4j.LoggerFactory;
  * facility from TestExportSnapshot where possible.
  * @see TestExportSnapshot
  */
+@Ignore // HBASE-24493
 @Category({VerySlowMapReduceTests.class, LargeTests.class})
 public class TestExportSnapshotAdjunct {
   private static final Logger LOG = LoggerFactory.getLogger(TestExportSnapshotAdjunct.class);
@@ -71,9 +73,23 @@ public class TestExportSnapshotAdjunct {
     TestExportSnapshot.setUpBaseConf(TEST_UTIL.getConfiguration());
     TEST_UTIL.startMiniCluster(3);
     TEST_UTIL.startMiniMapReduceCluster();
+  }
+
+  /**
+   * Check for references to '/tmp'. We are trying to avoid having references to outside of the
+   * test data dir when running tests. References outside of the test dir makes it so concurrent
+   * tests can stamp on each other by mistake. This check is for references to the 'tmp'.
+   *
+   * This is a strange place for this test but I want somewhere where the configuration is
+   * full -- filed w/ hdfs and mapreduce configurations.
+   */
+  private void checkForReferencesToTmpDir() {
     Configuration conf = TEST_UTIL.getConfiguration();
     for (Iterator<Map.Entry<String, String>> i = conf.iterator(); i.hasNext();) {
       Map.Entry<String, String> e = i.next();
+      if (e.getKey().contains("original.hbase.dir")) {
+        continue;
+      }
       if (e.getValue().contains("java.io.tmpdir")) {
         continue;
       }

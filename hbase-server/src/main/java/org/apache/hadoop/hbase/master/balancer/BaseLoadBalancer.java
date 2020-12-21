@@ -18,6 +18,7 @@
  */
 package org.apache.hadoop.hbase.master.balancer;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1120,11 +1121,9 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    * If master is configured to carry system tables only, in here is
    * where we figure what to assign it.
    */
+  @NonNull
   protected Map<ServerName, List<RegionInfo>> assignMasterSystemRegions(
       Collection<RegionInfo> regions, List<ServerName> servers) {
-    if (servers == null || regions == null || regions.isEmpty()) {
-      return null;
-    }
     Map<ServerName, List<RegionInfo>> assignments = new TreeMap<>();
     if (this.maintenanceMode || this.onlySystemTablesOnMaster) {
       if (masterServerName != null && servers.contains(masterServerName)) {
@@ -1192,6 +1191,10 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       return false;
     }
     if(areSomeRegionReplicasColocated(c)) return true;
+    if(idleRegionServerExist(c)) {
+      return true;
+    }
+
     // Check if we even need to do any load balancing
     // HBASE-3681 check sloppiness first
     float average = cs.getLoadAverage(); // for logging
@@ -1223,6 +1226,20 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     return false;
   }
 
+  protected final boolean idleRegionServerExist(Cluster c){
+    boolean isServerExistsWithMoreRegions = false;
+    boolean isServerExistsWithZeroRegions = false;
+    for (int[] serverList: c.regionsPerServer){
+      if (serverList.length > 1) {
+        isServerExistsWithMoreRegions = true;
+      }
+      if (serverList.length == 0) {
+        isServerExistsWithZeroRegions = true;
+      }
+    }
+    return isServerExistsWithMoreRegions && isServerExistsWithZeroRegions;
+  }
+
   /**
    * Generates a bulk assignment plan to be used on cluster startup using a
    * simple round-robin assignment.
@@ -1237,15 +1254,16 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    *
    * @param regions all regions
    * @param servers all servers
-   * @return map of server to the regions it should take, or null if no
-   *         assignment is possible (ie. no regions or no servers)
+   * @return map of server to the regions it should take, or emptyMap if no
+   *         assignment is possible (ie. no servers)
    */
   @Override
+  @NonNull
   public Map<ServerName, List<RegionInfo>> roundRobinAssignment(List<RegionInfo> regions,
       List<ServerName> servers) throws HBaseIOException {
     metricsBalancer.incrMiscInvocations();
     Map<ServerName, List<RegionInfo>> assignments = assignMasterSystemRegions(regions, servers);
-    if (assignments != null && !assignments.isEmpty()) {
+    if (!assignments.isEmpty()) {
       servers = new ArrayList<>(servers);
       // Guarantee not to put other regions on master
       servers.remove(masterServerName);
@@ -1255,14 +1273,17 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
         regions.removeAll(masterRegions);
       }
     }
-    if (this.maintenanceMode || regions == null || regions.isEmpty()) {
+    /**
+     * only need assign system table
+     */
+    if (this.maintenanceMode || regions.isEmpty()) {
       return assignments;
     }
 
     int numServers = servers == null ? 0 : servers.size();
     if (numServers == 0) {
       LOG.warn("Wanted to do round robin assignment but no servers to assign to");
-      return null;
+      return Collections.emptyMap();
     }
 
     // TODO: instead of retainAssignment() and roundRobinAssignment(), we should just run the
@@ -1377,15 +1398,17 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    *
    * @param regions regions and existing assignment from meta
    * @param servers available servers
-   * @return map of servers and regions to be assigned to them
+   * @return map of servers and regions to be assigned to them, or emptyMap if no
+   *           assignment is possible (ie. no servers)
    */
   @Override
+  @NonNull
   public Map<ServerName, List<RegionInfo>> retainAssignment(Map<RegionInfo, ServerName> regions,
       List<ServerName> servers) throws HBaseIOException {
     // Update metrics
     metricsBalancer.incrMiscInvocations();
     Map<ServerName, List<RegionInfo>> assignments = assignMasterSystemRegions(regions.keySet(), servers);
-    if (assignments != null && !assignments.isEmpty()) {
+    if (!assignments.isEmpty()) {
       servers = new ArrayList<>(servers);
       // Guarantee not to put other regions on master
       servers.remove(masterServerName);
@@ -1400,7 +1423,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     int numServers = servers == null ? 0 : servers.size();
     if (numServers == 0) {
       LOG.warn("Wanted to do retain assignment but no servers to assign to");
-      return null;
+      return Collections.emptyMap();
     }
     if (numServers == 1) { // Only one server, nothing fancy we can do here
       ServerName server = servers.get(0);

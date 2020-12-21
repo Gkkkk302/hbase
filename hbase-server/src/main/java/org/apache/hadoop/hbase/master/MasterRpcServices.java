@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.master;
 
 import static org.apache.hadoop.hbase.master.MasterWalManager.META_FILTER;
+
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.BindException;
@@ -70,6 +71,7 @@ import org.apache.hadoop.hbase.ipc.RpcServerFactory;
 import org.apache.hadoop.hbase.ipc.RpcServerInterface;
 import org.apache.hadoop.hbase.ipc.ServerRpcController;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
+import org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure;
 import org.apache.hadoop.hbase.master.locking.LockProcedure;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureUtil;
@@ -117,9 +119,11 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.ResponseConverter;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos;
@@ -142,6 +146,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ClusterStatusProtos.Reg
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.NameStringPair;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.ProcedureDescription;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.RegionSpecifier;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.RegionSpecifier.RegionSpecifierType;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.VersionInfo;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.LockServiceProtos.LockHeartbeatRequest;
@@ -203,7 +208,6 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetProcedu
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetProcedureResultResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetProceduresRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetProceduresResponse;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetRegionStateInMetaResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetSchemaAlterStatusRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetSchemaAlterStatusResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.GetTableDescriptorsRequest;
@@ -265,6 +269,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.OfflineReg
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.OfflineRegionResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RecommissionRegionServerRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RecommissionRegionServerResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RegionSpecifierAndState;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RestoreSnapshotRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RestoreSnapshotResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.RunCatalogScanRequest;
@@ -284,10 +289,9 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetNormali
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetQuotaRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetQuotaResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetRegionStateInMetaRequest;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos
-    .SetSnapshotCleanupRequest;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos
-    .SetSnapshotCleanupResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetRegionStateInMetaResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetSnapshotCleanupRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetSnapshotCleanupResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetSplitOrMergeEnabledRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetSplitOrMergeEnabledResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.SetTableStateInMetaRequest;
@@ -2478,31 +2482,39 @@ public class MasterRpcServices extends RSRpcServices implements
    * @return previous states of the regions
    */
   @Override
-  public GetRegionStateInMetaResponse setRegionStateInMeta(RpcController controller,
+  public SetRegionStateInMetaResponse setRegionStateInMeta(RpcController controller,
     SetRegionStateInMetaRequest request) throws ServiceException {
-    final GetRegionStateInMetaResponse.Builder builder = GetRegionStateInMetaResponse.newBuilder();
-    for(ClusterStatusProtos.RegionState s : request.getStatesList()) {
-      try {
-        RegionInfo info = this.master.getAssignmentManager().
-          loadRegionFromMeta(s.getRegionInfo().getRegionEncodedName());
+    SetRegionStateInMetaResponse.Builder builder = SetRegionStateInMetaResponse.newBuilder();
+    try {
+      for (RegionSpecifierAndState s : request.getStatesList()) {
+        RegionSpecifier spec = s.getRegionSpecifier();
+        String encodedName;
+        if (spec.getType() == RegionSpecifierType.ENCODED_REGION_NAME) {
+          encodedName = spec.getValue().toStringUtf8();
+        } else {
+          // TODO: actually, a full region name can save a lot on meta scan, improve later.
+          encodedName = RegionInfo.encodeRegionName(spec.getValue().toByteArray());
+        }
+        RegionInfo info = this.master.getAssignmentManager().loadRegionFromMeta(encodedName);
         LOG.trace("region info loaded from meta table: {}", info);
-        RegionState prevState = this.master.getAssignmentManager().getRegionStates().
-          getRegionState(info);
-        RegionState newState = RegionState.convert(s);
+        RegionState prevState =
+          this.master.getAssignmentManager().getRegionStates().getRegionState(info);
+        RegionState.State newState = RegionState.State.convert(s.getState());
         LOG.info("{} set region={} state from {} to {}", master.getClientIdAuditPrefix(), info,
-          prevState.getState(), newState.getState());
+          prevState.getState(), newState);
         Put metaPut = MetaTableAccessor.makePutFromRegionInfo(info, System.currentTimeMillis());
         metaPut.addColumn(HConstants.CATALOG_FAMILY, HConstants.STATE_QUALIFIER,
-          Bytes.toBytes(newState.getState().name()));
+          Bytes.toBytes(newState.name()));
         List<Put> putList = new ArrayList<>();
         putList.add(metaPut);
         MetaTableAccessor.putsToMetaTable(this.master.getConnection(), putList);
-        //Loads from meta again to refresh AM cache with the new region state
-        this.master.getAssignmentManager().loadRegionFromMeta(info.getEncodedName());
-        builder.addStates(prevState.convert());
-      } catch (Exception e) {
-        throw new ServiceException(e);
+        // Loads from meta again to refresh AM cache with the new region state
+        this.master.getAssignmentManager().loadRegionFromMeta(encodedName);
+        builder.addStates(RegionSpecifierAndState.newBuilder().setRegionSpecifier(spec)
+          .setState(prevState.getState().convert()));
       }
+    } catch (Exception e) {
+      throw new ServiceException(e);
     }
     return builder.build();
   }
@@ -2533,30 +2545,40 @@ public class MasterRpcServices extends RSRpcServices implements
   }
 
   /**
-   * A 'raw' version of assign that does bulk and skirts Master state checks (assigns can be made
-   * during Master startup). For use by Hbck2.
+   * @throws ServiceException If no MasterProcedureExecutor
    */
-  @Override
-  public MasterProtos.AssignsResponse assigns(RpcController controller,
-      MasterProtos.AssignsRequest request)
-    throws ServiceException {
+  private void checkMasterProcedureExecutor() throws ServiceException {
     if (this.master.getMasterProcedureExecutor() == null) {
       throw new ServiceException("Master's ProcedureExecutor not initialized; retry later");
     }
+  }
+
+  /**
+   * A 'raw' version of assign that does bulk and can skirt Master state checks if override
+   * is set; i.e. assigns can be forced during Master startup or if RegionState is unclean.
+   * Used by HBCK2.
+   */
+  @Override
+  public MasterProtos.AssignsResponse assigns(RpcController controller,
+      MasterProtos.AssignsRequest request) throws ServiceException {
+    checkMasterProcedureExecutor();
     MasterProtos.AssignsResponse.Builder responseBuilder =
-        MasterProtos.AssignsResponse.newBuilder();
+      MasterProtos.AssignsResponse.newBuilder();
     try {
       boolean override = request.getOverride();
       LOG.info("{} assigns, override={}", master.getClientIdAuditPrefix(), override);
       for (HBaseProtos.RegionSpecifier rs: request.getRegionList()) {
+        long pid = Procedure.NO_PROC_ID;
         RegionInfo ri = getRegionInfo(rs);
         if (ri == null) {
           LOG.info("Unknown={}", rs);
-          responseBuilder.addPid(Procedure.NO_PROC_ID);
-          continue;
+        } else {
+          Procedure p = this.master.getAssignmentManager().createOneAssignProcedure(ri, override);
+          if (p != null) {
+            pid = this.master.getMasterProcedureExecutor().submitProcedure(p);
+          }
         }
-        responseBuilder.addPid(this.master.getMasterProcedureExecutor().submitProcedure(this.master
-            .getAssignmentManager().createOneAssignProcedure(ri, override)));
+        responseBuilder.addPid(pid);
       }
       return responseBuilder.build();
     } catch (IOException ioe) {
@@ -2565,30 +2587,31 @@ public class MasterRpcServices extends RSRpcServices implements
   }
 
   /**
-   * A 'raw' version of unassign that does bulk and skirts Master state checks (unassigns can be
-   * made during Master startup). For use by Hbck2.
+   * A 'raw' version of unassign that does bulk and can skirt Master state checks if override
+   * is set; i.e. unassigns can be forced during Master startup or if RegionState is unclean.
+   * Used by HBCK2.
    */
   @Override
   public MasterProtos.UnassignsResponse unassigns(RpcController controller,
-      MasterProtos.UnassignsRequest request)
-      throws ServiceException {
-    if (this.master.getMasterProcedureExecutor() == null) {
-      throw new ServiceException("Master's ProcedureExecutor not initialized; retry later");
-    }
+      MasterProtos.UnassignsRequest request) throws ServiceException {
+    checkMasterProcedureExecutor();
     MasterProtos.UnassignsResponse.Builder responseBuilder =
         MasterProtos.UnassignsResponse.newBuilder();
     try {
       boolean override = request.getOverride();
       LOG.info("{} unassigns, override={}", master.getClientIdAuditPrefix(), override);
       for (HBaseProtos.RegionSpecifier rs: request.getRegionList()) {
+        long pid = Procedure.NO_PROC_ID;
         RegionInfo ri = getRegionInfo(rs);
         if (ri == null) {
           LOG.info("Unknown={}", rs);
-          responseBuilder.addPid(Procedure.NO_PROC_ID);
-          continue;
+        } else {
+          Procedure p = this.master.getAssignmentManager().createOneUnassignProcedure(ri, override);
+          if (p != null) {
+            pid = this.master.getMasterProcedureExecutor().submitProcedure(p);
+          }
         }
-        responseBuilder.addPid(this.master.getMasterProcedureExecutor().submitProcedure(this.master
-            .getAssignmentManager().createOneUnassignProcedure(ri, override)));
+        responseBuilder.addPid(pid);
       }
       return responseBuilder.build();
     } catch (IOException ioe) {

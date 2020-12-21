@@ -21,6 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
@@ -40,7 +41,7 @@ import org.apache.hadoop.hbase.master.balancer.SimpleLoadBalancer;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.zookeeper.KeeperException;
@@ -109,7 +110,8 @@ public class TestZooKeeper {
       // Still need to clean things up
       TEST_UTIL.shutdownMiniHBaseCluster();
     } finally {
-      TEST_UTIL.getTestFileSystem().delete(FSUtils.getRootDir(TEST_UTIL.getConfiguration()), true);
+      TEST_UTIL.getTestFileSystem().delete(CommonFSUtils.getRootDir(TEST_UTIL.getConfiguration()),
+        true);
       ZKUtil.deleteNodeRecursively(TEST_UTIL.getZooKeeperWatcher(), "/hbase");
     }
   }
@@ -281,6 +283,7 @@ public class TestZooKeeper {
     static boolean retainAssignCalled = false;
 
     @Override
+    @NonNull
     public Map<ServerName, List<RegionInfo>> retainAssignment(
         Map<RegionInfo, ServerName> regions, List<ServerName> servers) throws HBaseIOException {
       retainAssignCalled = true;

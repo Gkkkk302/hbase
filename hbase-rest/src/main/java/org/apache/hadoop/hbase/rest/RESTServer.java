@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import javax.servlet.DispatcherType;
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
@@ -118,7 +119,7 @@ public class RESTServer implements Constants {
     HelpFormatter formatter = new HelpFormatter();
     formatter.printHelp("hbase rest start", "", options,
       "\nTo run the REST server as a daemon, execute " +
-      "hbase-daemon.sh start|stop rest [--infoport <port>] [-p <port>] [-ro]\n", true);
+      "hbase-daemon.sh start|stop rest [-i <port>] [-p <port>] [-ro]\n", true);
     System.exit(exitCode);
   }
 
@@ -186,7 +187,7 @@ public class RESTServer implements Constants {
     options.addOption("p", "port", true, "Port to bind to [default: " + DEFAULT_LISTEN_PORT + "]");
     options.addOption("ro", "readonly", false, "Respond only to GET HTTP " +
       "method requests [default: false]");
-    options.addOption(null, "infoport", true, "Port for web UI");
+    options.addOption("i", "infoport", true, "Port for WEB UI");
 
     CommandLine commandLine = null;
     try {
@@ -218,7 +219,7 @@ public class RESTServer implements Constants {
       String val = commandLine.getOptionValue("infoport");
       conf.setInt("hbase.rest.info.port", Integer.parseInt(val));
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Web UI port set to " + val);
+        LOG.debug("WEB UI port set to " + val);
       }
     }
 
@@ -307,13 +308,31 @@ public class RESTServer implements Constants {
 
       SslContextFactory sslCtxFactory = new SslContextFactory();
       String keystore = conf.get(REST_SSL_KEYSTORE_STORE);
+      String keystoreType = conf.get(REST_SSL_KEYSTORE_TYPE);
       String password = HBaseConfiguration.getPassword(conf,
           REST_SSL_KEYSTORE_PASSWORD, null);
       String keyPassword = HBaseConfiguration.getPassword(conf,
           REST_SSL_KEYSTORE_KEYPASSWORD, password);
       sslCtxFactory.setKeyStorePath(keystore);
+      if(StringUtils.isNotBlank(keystoreType)) {
+        sslCtxFactory.setKeyStoreType(keystoreType);
+      }
       sslCtxFactory.setKeyStorePassword(password);
       sslCtxFactory.setKeyManagerPassword(keyPassword);
+
+      String trustStore = conf.get(REST_SSL_TRUSTSTORE_STORE);
+      if(StringUtils.isNotBlank(trustStore)) {
+        sslCtxFactory.setTrustStorePath(trustStore);
+      }
+      String trustStorePassword =
+        HBaseConfiguration.getPassword(conf, REST_SSL_TRUSTSTORE_PASSWORD, null);
+      if(StringUtils.isNotBlank(trustStorePassword)) {
+        sslCtxFactory.setTrustStorePassword(trustStorePassword);
+      }
+      String trustStoreType = conf.get(REST_SSL_TRUSTSTORE_TYPE);
+      if(StringUtils.isNotBlank(trustStoreType)) {
+        sslCtxFactory.setTrustStoreType(trustStoreType);
+      }
 
       String[] excludeCiphers = servlet.getConfiguration().getStrings(
           REST_SSL_EXCLUDE_CIPHER_SUITES, ArrayUtils.EMPTY_STRING_ARRAY);
@@ -384,13 +403,8 @@ public class RESTServer implements Constants {
       this.infoServer.setAttribute("hbase.conf", conf);
       this.infoServer.start();
     }
-    try {
-      // start server
-      server.start();
-    } catch (Exception e) {
-      LOG.error(HBaseMarkers.FATAL, "Failed to start server", e);
-      throw e;
-    }
+    // start server
+    server.start();
   }
 
   public synchronized void join() throws Exception {
@@ -444,6 +458,7 @@ public class RESTServer implements Constants {
       server.run();
       server.join();
     } catch (Exception e) {
+      LOG.error(HBaseMarkers.FATAL, "Failed to start server", e);
       System.exit(1);
     }
 

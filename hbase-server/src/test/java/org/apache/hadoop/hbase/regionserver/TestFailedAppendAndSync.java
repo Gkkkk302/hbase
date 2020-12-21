@@ -130,35 +130,40 @@ public class TestFailedAppendAndSync {
       @Override
       protected Writer createWriterInstance(Path path) throws IOException {
         final Writer w = super.createWriterInstance(path);
-          return new Writer() {
-            @Override
-            public void close() throws IOException {
-              w.close();
-            }
-
-            @Override
-            public void sync(boolean forceSync) throws IOException {
-              if (throwSyncException) {
-                throw new IOException("FAKE! Failed to replace a bad datanode...");
-              }
-              w.sync(forceSync);
-            }
-
-            @Override
-            public void append(Entry entry) throws IOException {
-              if (throwAppendException) {
-                throw new IOException("FAKE! Failed to replace a bad datanode...");
-              }
-              w.append(entry);
-            }
-
-            @Override
-            public long getLength() {
-              return w.getLength();
-              }
-            };
+        return new Writer() {
+          @Override
+          public void close() throws IOException {
+            w.close();
           }
+
+          @Override
+          public void sync(boolean forceSync) throws IOException {
+            if (throwSyncException) {
+              throw new IOException("FAKE! Failed to replace a bad datanode...");
+            }
+            w.sync(forceSync);
+          }
+
+          @Override
+          public void append(Entry entry) throws IOException {
+            if (throwAppendException) {
+              throw new IOException("FAKE! Failed to replace a bad datanode...");
+            }
+            w.append(entry);
+          }
+
+          @Override
+          public long getLength() {
+            return w.getLength();
+          }
+
+          @Override
+          public long getSyncedLength() {
+            return w.getSyncedLength();
+          }
+        };
       }
+    }
 
     // Make up mocked server and services.
     RegionServerServices services = mock(RegionServerServices.class);
@@ -269,7 +274,8 @@ public class TestFailedAppendAndSync {
    */
   public static HRegion initHRegion(TableName tableName, byte[] startKey, byte[] stopKey, WAL wal)
   throws IOException {
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
     return TEST_UTIL.createLocalHRegion(tableName, startKey, stopKey, false, Durability.SYNC_WAL,
       wal, COLUMN_FAMILY_BYTES);
   }

@@ -371,6 +371,8 @@ public class TestWALEntryStream {
   private ReplicationSource mockReplicationSource(boolean recovered, Configuration conf) {
     ReplicationSourceManager mockSourceManager = Mockito.mock(ReplicationSourceManager.class);
     when(mockSourceManager.getTotalBufferUsed()).thenReturn(new AtomicLong(0));
+    when(mockSourceManager.getTotalBufferLimit()).thenReturn(
+        (long) HConstants.REPLICATION_SOURCE_TOTAL_BUFFER_DFAULT);
     Server mockServer = Mockito.mock(Server.class);
     ReplicationSource source = Mockito.mock(ReplicationSource.class);
     when(source.getSourceManager()).thenReturn(mockSourceManager);
@@ -378,6 +380,9 @@ public class TestWALEntryStream {
     when(source.getWALFileLengthProvider()).thenReturn(log);
     when(source.getServer()).thenReturn(mockServer);
     when(source.isRecovered()).thenReturn(recovered);
+    MetricsReplicationGlobalSourceSource globalMetrics = Mockito.mock(
+        MetricsReplicationGlobalSourceSource.class);
+    when(mockSourceManager.getGlobalMetrics()).thenReturn(globalMetrics);
     return source;
   }
 
@@ -448,9 +453,7 @@ public class TestWALEntryStream {
     batch = reader.take();
     assertEquals(walPath, batch.getLastWalPath());
     assertEquals(5, batch.getNbEntries());
-    // Actually this should be true but we haven't handled this yet since for a normal queue the
-    // last one is always open... Not a big deal for now.
-    assertFalse(batch.isEndOfFile());
+    assertTrue(batch.isEndOfFile());
 
     assertSame(WALEntryBatch.NO_MORE_DATA, reader.take());
   }

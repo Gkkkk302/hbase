@@ -285,7 +285,9 @@ public class MetaTableAccessor {
       parsedInfo = parseRegionInfoFromRegionName(regionName);
       row = getMetaKeyForRegion(parsedInfo);
     } catch (Exception parseEx) {
-      // Ignore. This is used with tableName passed as regionName.
+      // If it is not a valid regionName(i.e, tableName), it needs to return null here
+      // as querying meta table wont help.
+      return null;
     }
     Get get = new Get(row);
     get.addFamily(HConstants.CATALOG_FAMILY);
@@ -332,12 +334,7 @@ public class MetaTableAccessor {
     long regionId = Long.parseLong(Bytes.toString(fields[2]));
     int replicaId = fields.length > 3 ? Integer.parseInt(Bytes.toString(fields[3]), 16) : 0;
     return RegionInfoBuilder.newBuilder(TableName.valueOf(fields[0]))
-              .setStartKey(fields[1])
-              .setEndKey(fields[2])
-              .setSplit(false)
-              .setRegionId(regionId)
-              .setReplicaId(replicaId)
-              .build();
+      .setStartKey(fields[1]).setRegionId(regionId).setReplicaId(replicaId).build();
   }
 
   /**
@@ -368,8 +365,10 @@ public class MetaTableAccessor {
       new SubstringComparator(regionEncodedName));
     Scan scan = getMetaScan(connection, 1);
     scan.setFilter(rowFilter);
-    ResultScanner resultScanner = getMetaHTable(connection).getScanner(scan);
-    return resultScanner.next();
+    try (Table table = getMetaHTable(connection);
+        ResultScanner resultScanner = table.getScanner(scan)) {
+      return resultScanner.next();
+    }
   }
 
   /**
@@ -383,30 +382,47 @@ public class MetaTableAccessor {
   }
 
   /**
-   * @return Deserialized regioninfo values taken from column values that match
-   *   the regex 'info:merge.*' in array of <code>cells</code>.
+   * Check whether the given {@code regionName} has any 'info:merge*' columns.
+   */
+  public static boolean hasMergeRegions(Connection conn, byte[] regionName) throws IOException {
+    return hasMergeRegions(getRegionResult(conn, regionName).rawCells());
+  }
+
+  /**
+   * @return Deserialized values of &lt;qualifier,regioninfo&gt; pairs taken from column values that
+   *         match the regex 'info:merge.*' in array of <code>cells</code>.
    */
   @Nullable
-  public static List<RegionInfo> getMergeRegions(Cell [] cells) {
+  public static Map<String, RegionInfo> getMergeRegionsWithName(Cell [] cells) {
     if (cells == null) {
       return null;
     }
-    List<RegionInfo> regionsToMerge = null;
+    Map<String, RegionInfo> regionsToMerge = null;
     for (Cell cell: cells) {
       if (!isMergeQualifierPrefix(cell)) {
         continue;
       }
       // Ok. This cell is that of a info:merge* column.
       RegionInfo ri = RegionInfo.parseFromOrNull(cell.getValueArray(), cell.getValueOffset(),
-         cell.getValueLength());
+        cell.getValueLength());
       if (ri != null) {
         if (regionsToMerge == null) {
-          regionsToMerge = new ArrayList<>();
+          regionsToMerge = new LinkedHashMap<>();
         }
-        regionsToMerge.add(ri);
+        regionsToMerge.put(Bytes.toString(CellUtil.cloneQualifier(cell)), ri);
       }
     }
     return regionsToMerge;
+  }
+
+  /**
+   * @return Deserialized regioninfo values taken from column values that match
+   *   the regex 'info:merge.*' in array of <code>cells</code>.
+   */
+  @Nullable
+  public static List<RegionInfo> getMergeRegions(Cell [] cells) {
+    Map<String, RegionInfo> mergeRegionsWithName = getMergeRegionsWithName(cells);
+    return (mergeRegionsWithName == null) ? null : new ArrayList<>(mergeRegionsWithName.values());
   }
 
   /**
@@ -567,7 +583,6 @@ public class MetaTableAccessor {
    * @param tableName bytes of table's name
    * @return configured Scan object
    */
-  @Deprecated
   public static Scan getScanForTableName(Connection connection, TableName tableName) {
     // Start key is just the table name with delimiters
     byte[] startKey = getTableStartRowForMeta(tableName, QueryType.REGION);
@@ -904,8 +919,7 @@ public class MetaTableAccessor {
    * @param replicaId the replicaId of the region
    * @return a byte[] for sn column qualifier
    */
-  @VisibleForTesting
-  static byte[] getServerNameColumn(int replicaId) {
+  public static byte[] getServerNameColumn(int replicaId) {
     return replicaId == 0 ? HConstants.SERVERNAME_QUALIFIER
         : Bytes.toBytes(HConstants.SERVERNAME_QUALIFIER_STR + META_REPLICA_ID_DELIMITER
             + String.format(RegionInfo.REPLICA_ID_FORMAT, replicaId));
@@ -995,6 +1009,33 @@ public class MetaTableAccessor {
       LOG.error("Ignoring invalid region for server " + hostAndPort + "; cell=" + cell, e);
       return null;
     }
+  }
+
+  /**
+   * Returns the {@link ServerName} from catalog table {@link Result} where the region is
+   * transitioning on. It should be the same as {@link MetaTableAccessor#getServerName(Result,int)}
+   * if the server is at OPEN state.
+   *
+   * @param r Result to pull the transitioning server name from
+   * @return A ServerName instance or {@link MetaTableAccessor#getServerName(Result,int)}
+   * if necessary fields not found or empty.
+   */
+  @Nullable
+  public static ServerName getTargetServerName(final Result r, final int replicaId) {
+    final Cell cell = r.getColumnLatestCell(HConstants.CATALOG_FAMILY,
+      getServerNameColumn(replicaId));
+    if (cell == null || cell.getValueLength() == 0) {
+      RegionLocations locations = MetaTableAccessor.getRegionLocations(r);
+      if (locations != null) {
+        HRegionLocation location = locations.getRegionLocation(replicaId);
+        if (location != null) {
+          return location.getServerName();
+        }
+      }
+      return null;
+    }
+    return ServerName.parseServerName(Bytes.toString(cell.getValueArray(), cell.getValueOffset(),
+      cell.getValueLength()));
   }
 
   /**
@@ -1904,6 +1945,16 @@ public class MetaTableAccessor {
       qualifiers.add(qualifier);
       delete.addColumns(getCatalogFamily(), qualifier, HConstants.LATEST_TIMESTAMP);
     }
+
+    // There will be race condition that a GCMultipleMergedRegionsProcedure is scheduled while
+    // the previous GCMultipleMergedRegionsProcedure is still going on, in this case, the second
+    // GCMultipleMergedRegionsProcedure could delete the merged region by accident!
+    if (qualifiers.isEmpty()) {
+      LOG.info("No merged qualifiers for region " + mergeRegion.getRegionNameAsString() +
+        " in meta table, they are cleaned up already, Skip.");
+      return;
+    }
+
     deleteFromMetaTable(connection, delete);
     LOG.info("Deleted merge references in " + mergeRegion.getRegionNameAsString() +
         ", deleted qualifiers " + qualifiers.stream().map(Bytes::toStringBinary).

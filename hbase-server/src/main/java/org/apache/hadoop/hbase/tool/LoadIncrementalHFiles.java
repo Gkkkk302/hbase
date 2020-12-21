@@ -92,7 +92,7 @@ import org.apache.hadoop.hbase.regionserver.StoreFileWriter;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.token.FsDelegationToken;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSHDFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.FSVisitor;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.util.Tool;
@@ -146,15 +146,16 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
   // above. It is invalid family name.
   static final String TMP_DIR = ".tmp";
 
-  private final int maxFilesPerRegionPerFamily;
-  private final boolean assignSeqIds;
+  private int maxFilesPerRegionPerFamily;
+  private boolean assignSeqIds;
+  private boolean bulkLoadByFamily;
 
   // Source delegation token
-  private final FsDelegationToken fsDelegationToken;
-  private final UserProvider userProvider;
-  private final int nrThreads;
+  private FsDelegationToken fsDelegationToken;
+  private UserProvider userProvider;
+  private int nrThreads;
   private AtomicInteger numRetries;
-  private final RpcControllerFactory rpcControllerFactory;
+  private RpcControllerFactory rpcControllerFactory;
 
   private String bulkToken;
 
@@ -183,13 +184,18 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
   public LoadIncrementalHFiles(Configuration conf) {
     // make a copy, just to be sure we're not overriding someone else's config
     super(HBaseConfiguration.create(conf));
-    conf = getConf();
+    initialize();
+  }
+
+  public void initialize() {
+    Configuration conf = getConf();
     // disable blockcache for tool invocation, see HBASE-10500
     conf.setFloat(HConstants.HFILE_BLOCK_CACHE_SIZE_KEY, 0);
     userProvider = UserProvider.instantiate(conf);
     fsDelegationToken = new FsDelegationToken(userProvider, "renewer");
     assignSeqIds = conf.getBoolean(ASSIGN_SEQ_IDS, true);
     maxFilesPerRegionPerFamily = conf.getInt(MAX_FILES_PER_REGION_PER_FAMILY, 32);
+    bulkLoadByFamily = conf.getBoolean(BulkLoadHFiles.BULK_LOAD_HFILES_BY_FAMILY, false);
     nrThreads = conf.getInt("hbase.loadincremental.threads.max",
       Runtime.getRuntime().availableProcessors());
     numRetries = new AtomicInteger(0);
@@ -465,6 +471,14 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
     return item2RegionMap;
   }
 
+  private Map<byte[], Collection<LoadQueueItem>>
+      groupByFamilies(Collection<LoadQueueItem> itemsInRegion) {
+    Map<byte[], Collection<LoadQueueItem>> families2Queue = new TreeMap<>(Bytes.BYTES_COMPARATOR);
+    itemsInRegion.forEach(item -> families2Queue
+        .computeIfAbsent(item.getFamily(), queue -> new ArrayList<>()).add(item));
+    return families2Queue;
+  }
+
   /**
    * This takes the LQI's grouped by likely regions and attempts to bulk load them. Any failures are
    * re-queued for another pass with the groupOrSplitPhase.
@@ -481,24 +495,18 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
         .entrySet()) {
       byte[] first = e.getKey().array();
       Collection<LoadQueueItem> lqis = e.getValue();
-
-      ClientServiceCallable<byte[]> serviceCallable =
-          buildClientServiceCallable(conn, table.getName(), first, lqis, copyFile);
-
-      Callable<List<LoadQueueItem>> call = new Callable<List<LoadQueueItem>>() {
-        @Override
-        public List<LoadQueueItem> call() throws Exception {
-          List<LoadQueueItem> toRetry =
-              tryAtomicRegionLoad(serviceCallable, table.getName(), first, lqis);
-          return toRetry;
-        }
-      };
       if (item2RegionMap != null) {
         for (LoadQueueItem lqi : lqis) {
           item2RegionMap.put(lqi, e.getKey());
         }
       }
-      loadingFutures.add(pool.submit(call));
+      if (bulkLoadByFamily) {
+        groupByFamilies(lqis).values().forEach(familyQueue -> loadingFutures.add(pool.submit(
+          () -> tryAtomicRegionLoad(conn, table.getName(), first, familyQueue, copyFile))));
+      } else {
+        loadingFutures.add(
+          pool.submit(() -> tryAtomicRegionLoad(conn, table.getName(), first, lqis, copyFile)));
+      }
     }
 
     // get all the results.
@@ -566,7 +574,7 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
             // Check to see if the source and target filesystems are the same
             // If they are the same filesystem, we will try move the files back
             // because previously we moved them to the staging directory.
-            if (FSHDFSUtils.isSameHdfs(getConf(), sourceFs, targetFs)) {
+            if (FSUtils.isSameHdfs(getConf(), sourceFs, targetFs)) {
               for (Pair<byte[], String> el : famPaths) {
                 Path hfileStagingPath = null;
                 Path hfileOrigPath = new Path(el.getSecond());
@@ -799,11 +807,34 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
    * <p>
    * Protected for testing.
    * @return empty list if success, list of items to retry on recoverable failure
+   * @deprecated as of release 2.3.0. Use {@link BulkLoadHFiles} instead.
    */
+  @Deprecated
+  @VisibleForTesting
+  protected List<LoadQueueItem> tryAtomicRegionLoad(final Connection conn,
+    final TableName tableName, final byte[] first, final Collection<LoadQueueItem> lqis,
+    boolean copyFile) throws IOException {
+    ClientServiceCallable<byte[]> serviceCallable =
+      buildClientServiceCallable(conn, tableName, first, lqis, copyFile);
+    return tryAtomicRegionLoad(serviceCallable, tableName, first, lqis);
+  }
+
+  /**
+   * Attempts to do an atomic load of many hfiles into a region. If it fails, it returns a list of
+   * hfiles that need to be retried. If it is successful it will return an empty list.
+   * <p>
+   * NOTE: To maintain row atomicity guarantees, region server callable should succeed atomically
+   * and fails atomically.
+   * <p>
+   * Protected for testing.
+   * @return empty list if success, list of items to retry on recoverable failure
+   * @deprecated as of release 2.3.0. Use {@link BulkLoadHFiles} instead.
+   */
+  @Deprecated
   @VisibleForTesting
   protected List<LoadQueueItem> tryAtomicRegionLoad(ClientServiceCallable<byte[]> serviceCallable,
-      final TableName tableName, final byte[] first, final Collection<LoadQueueItem> lqis)
-      throws IOException {
+    final TableName tableName, final byte[] first, final Collection<LoadQueueItem> lqis)
+    throws IOException {
     List<LoadQueueItem> toRetry = new ArrayList<>();
     try {
       Configuration conf = getConf();
@@ -1225,10 +1256,10 @@ public class LoadIncrementalHFiles extends Configured implements Tool {
       usage();
       return -1;
     }
+    // Re-initialize to apply -D options from the command line parameters
+    initialize();
     String dirPath = args[0];
     TableName tableName = TableName.valueOf(args[1]);
-
-
     if (args.length == 2) {
       return !run(dirPath, tableName).isEmpty() ? 0 : -1;
     } else {

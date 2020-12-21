@@ -20,12 +20,12 @@ package org.apache.hadoop.hbase.ipc;
 
 import static org.apache.hadoop.hbase.ipc.IPCUtil.toIOE;
 import static org.apache.hadoop.hbase.ipc.IPCUtil.wrapException;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
-import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -47,6 +47,7 @@ import org.apache.hadoop.ipc.RemoteException;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.cache.CacheBuilder;
@@ -60,6 +61,7 @@ import org.apache.hbase.thirdparty.com.google.protobuf.RpcChannel;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 import org.apache.hbase.thirdparty.io.netty.util.HashedWheelTimer;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
 
 /**
@@ -94,7 +96,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
   private static final ScheduledExecutorService IDLE_CONN_SWEEPER = Executors
       .newScheduledThreadPool(1, Threads.newDaemonThreadFactory("Idle-Rpc-Conn-Sweeper"));
 
-  protected boolean running = true; // if client runs
+  private boolean running = true; // if client runs
 
   protected final Configuration conf;
   protected final String clusterId;
@@ -120,7 +122,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
   protected final int readTO;
   protected final int writeTO;
 
-  protected final PoolMap<ConnectionId, T> connections;
+  private final PoolMap<ConnectionId, T> connections;
 
   private final AtomicInteger callIdCnt = new AtomicInteger(0);
 
@@ -202,7 +204,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
           if (LOG.isTraceEnabled()) {
             LOG.trace("Cleanup idle connection to {}", conn.remoteId().address);
           }
-          connections.removeValue(conn.remoteId(), conn);
+          connections.remove(conn.remoteId(), conn);
           conn.cleanupConnection();
         }
       }
@@ -277,7 +279,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
    */
   private static PoolMap.PoolType getPoolType(Configuration config) {
     return PoolMap.PoolType.valueOf(config.get(HConstants.HBASE_CLIENT_IPC_POOL_TYPE),
-      PoolMap.PoolType.RoundRobin, PoolMap.PoolType.ThreadLocal);
+      PoolMap.PoolType.RoundRobin);
   }
 
   /**
@@ -287,7 +289,14 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
    * @return the maximum pool size
    */
   private static int getPoolSize(Configuration config) {
-    return config.getInt(HConstants.HBASE_CLIENT_IPC_POOL_SIZE, 1);
+    int poolSize = config.getInt(HConstants.HBASE_CLIENT_IPC_POOL_SIZE, 1);
+
+    if (poolSize <= 0) {
+      LOG.warn("{} must be positive. Using default value: 1", HConstants.HBASE_CLIENT_IPC_POOL_SIZE);
+      return 1;
+    } else {
+      return poolSize;
+    }
   }
 
   private int nextCallId() {
@@ -343,11 +352,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
       if (!running) {
         throw new StoppedRpcClientException();
       }
-      conn = connections.get(remoteId);
-      if (conn == null) {
-        conn = createConnection(remoteId);
-        connections.put(remoteId, conn);
-      }
+      conn = connections.getOrCreate(remoteId, () -> createConnection(remoteId));
       conn.setLastTouched(EnvironmentEdgeManager.currentTime());
     }
     return conn;
@@ -446,7 +451,7 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
             && remoteId.address.getHostName().equals(sn.getHostname())) {
           LOG.info("The server on " + sn.toString() + " is dead - stopping the connection "
               + connection.remoteId);
-          connections.removeValue(remoteId, connection);
+          connections.remove(remoteId, connection);
           connection.shutdown();
           connection.cleanupConnection();
         }
@@ -510,13 +515,6 @@ public abstract class AbstractRpcClient<T extends RpcConnection> implements RpcC
   public RpcChannel createRpcChannel(ServerName sn, User user, int rpcTimeout)
       throws UnknownHostException {
     return new RpcChannelImplementation(this, createAddr(sn), user, rpcTimeout);
-  }
-
-  @Override
-  public RpcChannel createHedgedRpcChannel(Set<ServerName> sns, User user, int rpcTimeout)
-      throws UnknownHostException {
-    // Check HedgedRpcChannel implementation for detailed comments.
-    throw new UnsupportedOperationException("Hedging not supported for this implementation.");
   }
 
   private static class AbstractRpcChannel {

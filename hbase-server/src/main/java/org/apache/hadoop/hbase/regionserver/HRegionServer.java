@@ -23,7 +23,6 @@ import static org.apache.hadoop.hbase.HConstants.HBASE_SPLIT_WAL_COORDINATED_BY_
 import static org.apache.hadoop.hbase.HConstants.HBASE_SPLIT_WAL_MAX_SPLITTER;
 import static org.apache.hadoop.hbase.util.DNS.RS_HOSTNAME_KEY;
 import java.io.IOException;
-import java.lang.Thread.UncaughtExceptionHandler;
 import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
 import java.lang.reflect.Constructor;
@@ -120,6 +119,7 @@ import org.apache.hadoop.hbase.log.HBaseMarkers;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.RegionState.State;
+import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.mob.MobFileCache;
 import org.apache.hadoop.hbase.procedure.RegionServerProcedureManagerHost;
 import org.apache.hadoop.hbase.procedure2.RSProcedureCallable;
@@ -138,6 +138,7 @@ import org.apache.hadoop.hbase.regionserver.handler.CloseRegionHandler;
 import org.apache.hadoop.hbase.regionserver.handler.RSProcedureHandler;
 import org.apache.hadoop.hbase.regionserver.handler.RegionReplicaFlushHandler;
 import org.apache.hadoop.hbase.regionserver.slowlog.SlowLogRecorder;
+import org.apache.hadoop.hbase.regionserver.slowlog.SlowLogTableOpsChore;
 import org.apache.hadoop.hbase.regionserver.throttle.FlushThroughputControllerFactory;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationLoad;
@@ -153,11 +154,12 @@ import org.apache.hadoop.hbase.trace.SpanReceiverHost;
 import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Addressing;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.CompressionTest;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
 import org.apache.hadoop.hbase.util.FSUtils;
-import org.apache.hadoop.hbase.util.HasThread;
+import org.apache.hadoop.hbase.util.FutureUtils;
 import org.apache.hadoop.hbase.util.JvmPauseMonitor;
 import org.apache.hadoop.hbase.util.NettyEventLoopGroupConfig;
 import org.apache.hadoop.hbase.util.Pair;
@@ -236,7 +238,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProto
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.TOOLS)
 @SuppressWarnings({ "deprecation"})
-public class HRegionServer extends HasThread implements
+public class HRegionServer extends Thread implements
     RegionServerServices, LastSequenceId, ConfigurationObserver {
   private static final Logger LOG = LoggerFactory.getLogger(HRegionServer.class);
 
@@ -266,6 +268,13 @@ public class HRegionServer extends HasThread implements
    */
   private final Cache<Long, Long> executedRegionProcedures =
       CacheBuilder.newBuilder().expireAfterAccess(600, TimeUnit.SECONDS).build();
+
+  /**
+   * Used to cache the moved-out regions
+   */
+  private final Cache<String, MovedRegionInfo> movedRegionInfoCache =
+      CacheBuilder.newBuilder().expireAfterWrite(movedRegionCacheExpiredTime(),
+        TimeUnit.MILLISECONDS).build();
 
   private MemStoreFlusher cacheFlusher;
 
@@ -426,6 +435,8 @@ public class HRegionServer extends HasThread implements
 
   private final RegionServerAccounting regionServerAccounting;
 
+  private SlowLogTableOpsChore slowLogTableOpsChore = null;
+
   // Block cache
   private BlockCache blockCache;
   // The cache for mob files
@@ -468,11 +479,6 @@ public class HRegionServer extends HasThread implements
    * Unique identifier for the cluster we are a part of.
    */
   protected String clusterId;
-
-  /**
-   * Chore to clean periodically the moved region list
-   */
-  private MovedRegionsCleaner movedRegionsCleaner;
 
   // chore for refreshing store files for secondary regions
   private StorefileRefresherChore storefileRefresher;
@@ -717,15 +723,15 @@ public class HRegionServer extends HasThread implements
     // Get fs instance used by this RS.  Do we use checksum verification in the hbase? If hbase
     // checksum verification enabled, then automatically switch off hdfs checksum verification.
     boolean useHBaseChecksum = conf.getBoolean(HConstants.HBASE_CHECKSUM_VERIFICATION, true);
-    FSUtils.setFsDefault(this.conf, FSUtils.getWALRootDir(this.conf));
+    CommonFSUtils.setFsDefault(this.conf, CommonFSUtils.getWALRootDir(this.conf));
     this.walFs = new HFileSystem(this.conf, useHBaseChecksum);
-    this.walRootDir = FSUtils.getWALRootDir(this.conf);
+    this.walRootDir = CommonFSUtils.getWALRootDir(this.conf);
     // Set 'fs.defaultFS' to match the filesystem on hbase.rootdir else
     // underlying hadoop hdfs accessors will be going against wrong filesystem
     // (unless all is set to defaults).
-    FSUtils.setFsDefault(this.conf, FSUtils.getRootDir(this.conf));
+    CommonFSUtils.setFsDefault(this.conf, CommonFSUtils.getRootDir(this.conf));
     this.dataFs = new HFileSystem(this.conf, useHBaseChecksum);
-    this.dataRootDir = FSUtils.getRootDir(this.conf);
+    this.dataRootDir = CommonFSUtils.getRootDir(this.conf);
     this.tableDescriptors =
         new FSTableDescriptors(this.dataFs, this.dataRootDir, !canUpdateTableDescriptor(), false);
     if (this instanceof HMaster) {
@@ -1073,10 +1079,6 @@ public class HRegionServer extends HasThread implements
     }
     if (mobFileCache != null) {
       mobFileCache.shutdown();
-    }
-
-    if (movedRegionsCleaner != null) {
-      movedRegionsCleaner.stop("Region Server stopping");
     }
 
     // Send interrupts to wake up threads if sleeping so they notice shutdown.
@@ -1467,7 +1469,7 @@ public class HRegionServer extends HasThread implements
           LOG.debug("Waiting on {}", this.regionsInTransitionInRS.keySet().stream().
             map(e -> Bytes.toString(e)).collect(Collectors.joining(", ")));
         }
-        if (sleep(200)) {
+        if (sleepInterrupted(200)) {
           interrupted = true;
         }
       }
@@ -1478,7 +1480,7 @@ public class HRegionServer extends HasThread implements
     }
   }
 
-  private static boolean sleep(long millis) {
+  private static boolean sleepInterrupted(long millis) {
     boolean interrupted = false;
     try {
       Thread.sleep(millis);
@@ -1624,14 +1626,16 @@ public class HRegionServer extends HasThread implements
       long globalMemStoreSize = pair.getFirst();
       boolean offheap = this.regionServerAccounting.isOffheap();
       // When off heap memstore in use, take full area for chunk pool.
-      float poolSizePercentage = offheap? 1.0F:
-          conf.getFloat(MemStoreLAB.CHUNK_POOL_MAXSIZE_KEY, MemStoreLAB.POOL_MAX_SIZE_DEFAULT);
+      float poolSizePercentage = offheap ? 1.0F :
+        conf.getFloat(MemStoreLAB.CHUNK_POOL_MAXSIZE_KEY, MemStoreLAB.POOL_MAX_SIZE_DEFAULT);
       float initialCountPercentage = conf.getFloat(MemStoreLAB.CHUNK_POOL_INITIALSIZE_KEY,
-          MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT);
+        MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT);
       int chunkSize = conf.getInt(MemStoreLAB.CHUNK_SIZE_KEY, MemStoreLAB.CHUNK_SIZE_DEFAULT);
+      float indexChunkSizePercent = conf.getFloat(MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_KEY,
+        MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
       // init the chunkCreator
       ChunkCreator.initialize(chunkSize, offheap, globalMemStoreSize, poolSizePercentage,
-        initialCountPercentage, this.hMemManager);
+        initialCountPercentage, this.hMemManager, indexChunkSizePercent);
     }
   }
 
@@ -1960,9 +1964,9 @@ public class HRegionServer extends HasThread implements
     // Default is 2 mins. The default value for TTLCleaner is 5 mins so we set this to
     // 2 mins so that compacted files can be archived before the TTLCleaner runs
     int cleanerInterval =
-    conf.getInt("hbase.hfile.compaction.discharger.interval", 2 * 60 * 1000);
+      conf.getInt("hbase.hfile.compaction.discharger.interval", 2 * 60 * 1000);
     this.compactedFileDischarger =
-    new CompactedHFilesDischarger(cleanerInterval, this, this);
+      new CompactedHFilesDischarger(cleanerInterval, this, this);
     choreService.scheduleChore(compactedFileDischarger);
 
     // Start executor services
@@ -1995,25 +1999,39 @@ public class HRegionServer extends HasThread implements
     this.executorService.startExecutorService(ExecutorType.RS_SWITCH_RPC_THROTTLE,
       conf.getInt("hbase.regionserver.executor.switch.rpc.throttle.threads", 1));
 
-    Threads.setDaemonThreadRunning(this.walRoller.getThread(), getName() + ".logRoller",
-    uncaughtExceptionHandler);
+    Threads
+      .setDaemonThreadRunning(this.walRoller, getName() + ".logRoller", uncaughtExceptionHandler);
     if (this.cacheFlusher != null) {
       this.cacheFlusher.start(uncaughtExceptionHandler);
     }
     Threads.setDaemonThreadRunning(this.procedureResultReporter,
       getName() + ".procedureResultReporter", uncaughtExceptionHandler);
 
-    if (this.compactionChecker != null) choreService.scheduleChore(compactionChecker);
-    if (this.periodicFlusher != null) choreService.scheduleChore(periodicFlusher);
-    if (this.healthCheckChore != null) choreService.scheduleChore(healthCheckChore);
-    if (this.nonceManagerChore != null) choreService.scheduleChore(nonceManagerChore);
-    if (this.storefileRefresher != null) choreService.scheduleChore(storefileRefresher);
-    if (this.movedRegionsCleaner != null) choreService.scheduleChore(movedRegionsCleaner);
-    if (this.fsUtilizationChore != null) choreService.scheduleChore(fsUtilizationChore);
+    if (this.compactionChecker != null) {
+      choreService.scheduleChore(compactionChecker);
+    }
+    if (this.periodicFlusher != null) {
+      choreService.scheduleChore(periodicFlusher);
+    }
+    if (this.healthCheckChore != null) {
+      choreService.scheduleChore(healthCheckChore);
+    }
+    if (this.nonceManagerChore != null) {
+      choreService.scheduleChore(nonceManagerChore);
+    }
+    if (this.storefileRefresher != null) {
+      choreService.scheduleChore(storefileRefresher);
+    }
+    if (this.fsUtilizationChore != null) {
+      choreService.scheduleChore(fsUtilizationChore);
+    }
+    if (this.slowLogTableOpsChore != null) {
+      choreService.scheduleChore(slowLogTableOpsChore);
+    }
 
     // Leases is not a Thread. Internally it runs a daemon thread. If it gets
     // an unhandled exception, it will just exit.
-    Threads.setDaemonThreadRunning(this.leaseManager.getThread(), getName() + ".leaseChecker",
+    Threads.setDaemonThreadRunning(this.leaseManager, getName() + ".leaseChecker",
         uncaughtExceptionHandler);
 
     // Create the log splitting worker and start it
@@ -2032,8 +2050,7 @@ public class HRegionServer extends HasThread implements
       this.splitLogWorker = new SplitLogWorker(sinkConf, this,
           this, walFactory);
       splitLogWorker.start();
-    } else {
-      LOG.warn("SplitLogWorker Service NOT started; CoordinatedStateManager is null");
+      LOG.debug("SplitLogWorker started");
     }
 
     // Memstore services.
@@ -2055,8 +2072,13 @@ public class HRegionServer extends HasThread implements
     this.periodicFlusher = new PeriodicMemStoreFlusher(this.flushCheckFrequency, this);
     this.leaseManager = new LeaseManager(this.threadWakeFrequency);
 
-    // Create the thread to clean the moved regions list
-    movedRegionsCleaner = MovedRegionsCleaner.create(this);
+    final boolean isSlowLogTableEnabled = conf.getBoolean(HConstants.SLOW_LOG_SYS_TABLE_ENABLED_KEY,
+      HConstants.DEFAULT_SLOW_LOG_SYS_TABLE_ENABLED_KEY);
+    if (isSlowLogTableEnabled) {
+      // default chore duration: 10 min
+      final int duration = conf.getInt("hbase.slowlog.systable.chore.duration", 10 * 60 * 1000);
+      slowLogTableOpsChore = new SlowLogTableOpsChore(this, duration, this.slowLogRecorder);
+    }
 
     if (this.nonceManager != null) {
       // Create the scheduled chore that cleans up nonces.
@@ -2260,7 +2282,7 @@ public class HRegionServer extends HasThread implements
     long openProcId = context.getOpenProcId();
     long masterSystemTime = context.getMasterSystemTime();
     rpcServices.checkOpen();
-    LOG.info("Post open deploy tasks for {}, openProcId={}, masterSystemTime={}",
+    LOG.info("Post open deploy tasks for {}, pid={}, masterSystemTime={}",
       r.getRegionInfo().getRegionNameAsString(), openProcId, masterSystemTime);
     // Do checks to see if we need to compact (references or too many files)
     for (HStore s : r.stores.values()) {
@@ -2303,7 +2325,7 @@ public class HRegionServer extends HasThread implements
       if (hris[0].isMetaRegion()) {
         try {
           MetaTableLocator.setMetaLocation(getZooKeeper(), serverName,
-              hris[0].getReplicaId(),State.OPEN);
+              hris[0].getReplicaId(), RegionState.State.OPEN);
         } catch (KeeperException e) {
           LOG.info("Failed to update meta location", e);
           return false;
@@ -2556,8 +2578,8 @@ public class HRegionServer extends HasThread implements
       choreService.cancelChore(periodicFlusher);
       choreService.cancelChore(healthCheckChore);
       choreService.cancelChore(storefileRefresher);
-      choreService.cancelChore(movedRegionsCleaner);
       choreService.cancelChore(fsUtilizationChore);
+      choreService.cancelChore(slowLogTableOpsChore);
       // clean up the remaining scheduled chores (in case we missed out any)
       choreService.shutdown();
     }
@@ -2650,7 +2672,7 @@ public class HRegionServer extends HasThread implements
             previousLogTime = System.currentTimeMillis();
           }
           refresh = true; // let's try pull it from ZK directly
-          if (sleep(200)) {
+          if (sleepInterrupted(200)) {
             interrupted = true;
           }
           continue;
@@ -2680,7 +2702,7 @@ public class HRegionServer extends HasThread implements
             }
             previousLogTime = System.currentTimeMillis();
           }
-          if (sleep(200)) {
+          if (sleepInterrupted(200)) {
             interrupted = true;
           }
         }
@@ -3290,7 +3312,12 @@ public class HRegionServer extends HasThread implements
         closeSeqNum = r.getOpenSeqNum();
         if (closeSeqNum == HConstants.NO_SEQNUM) closeSeqNum = 0;
       }
-      addToMovedRegions(r.getRegionInfo().getEncodedName(), destination, closeSeqNum);
+      boolean selfMove = ServerName.isSameAddress(destination, this.getServerName());
+      addToMovedRegions(r.getRegionInfo().getEncodedName(), destination, closeSeqNum, selfMove);
+      if (selfMove) {
+        this.regionServerAccounting.getRetainedRegionRWRequestsCnt().put(r.getRegionInfo().getEncodedName()
+          , new Pair<>(r.getReadRequestsCount(), r.getWriteRequestsCount()));
+      }
     }
     this.regionFavoredNodesMap.remove(r.getRegionInfo().getEncodedName());
     return toReturn != null;
@@ -3419,12 +3446,10 @@ public class HRegionServer extends HasThread implements
   private static class MovedRegionInfo {
     private final ServerName serverName;
     private final long seqNum;
-    private final long moveTime;
 
     MovedRegionInfo(ServerName serverName, long closeSeqNum) {
       this.serverName = serverName;
       this.seqNum = closeSeqNum;
-      this.moveTime = EnvironmentEdgeManager.currentTime();
      }
 
     public ServerName getServerName() {
@@ -3434,17 +3459,7 @@ public class HRegionServer extends HasThread implements
     public long getSeqNum() {
       return seqNum;
     }
-
-    long getMoveTime() {
-      return moveTime;
-    }
   }
-
-  /**
-   * This map will contains all the regions that we closed for a move.
-   * We add the time it was moved as we don't want to keep too old information
-   */
-  private Map<String, MovedRegionInfo> movedRegions = new ConcurrentHashMap<>(3000);
 
   /**
    * We need a timeout. If not there is a risk of giving a wrong information: this would double
@@ -3452,91 +3467,28 @@ public class HRegionServer extends HasThread implements
    */
   private static final int TIMEOUT_REGION_MOVED = (2 * 60 * 1000);
 
-  private void addToMovedRegions(String encodedName, ServerName destination, long closeSeqNum) {
-    if (ServerName.isSameAddress(destination, this.getServerName())) {
+  private void addToMovedRegions(String encodedName, ServerName destination, long closeSeqNum, boolean selfMove) {
+    if (selfMove) {
       LOG.warn("Not adding moved region record: " + encodedName + " to self.");
       return;
     }
     LOG.info("Adding " + encodedName + " move to " + destination + " record at close sequenceid=" +
         closeSeqNum);
-    movedRegions.put(encodedName, new MovedRegionInfo(destination, closeSeqNum));
+    movedRegionInfoCache.put(encodedName, new MovedRegionInfo(destination, closeSeqNum));
   }
 
   void removeFromMovedRegions(String encodedName) {
-    movedRegions.remove(encodedName);
+    movedRegionInfoCache.invalidate(encodedName);
   }
 
-  private MovedRegionInfo getMovedRegion(final String encodedRegionName) {
-    MovedRegionInfo dest = movedRegions.get(encodedRegionName);
-
-    long now = EnvironmentEdgeManager.currentTime();
-    if (dest != null) {
-      if (dest.getMoveTime() > (now - TIMEOUT_REGION_MOVED)) {
-        return dest;
-      } else {
-        movedRegions.remove(encodedRegionName);
-      }
-    }
-
-    return null;
+  @VisibleForTesting
+  public MovedRegionInfo getMovedRegion(String encodedRegionName) {
+    return movedRegionInfoCache.getIfPresent(encodedRegionName);
   }
 
-  /**
-   * Remove the expired entries from the moved regions list.
-   */
-  protected void cleanMovedRegions() {
-    final long cutOff = System.currentTimeMillis() - TIMEOUT_REGION_MOVED;
-
-    movedRegions.entrySet().removeIf(e -> e.getValue().getMoveTime() < cutOff);
-  }
-
-  /*
-   * Use this to allow tests to override and schedule more frequently.
-   */
-
-  protected int movedRegionCleanerPeriod() {
+  @VisibleForTesting
+  public int movedRegionCacheExpiredTime() {
         return TIMEOUT_REGION_MOVED;
-  }
-
-  /**
-   * Creates a Chore thread to clean the moved region cache.
-   */
-  protected final static class MovedRegionsCleaner extends ScheduledChore implements Stoppable {
-    private HRegionServer regionServer;
-    Stoppable stoppable;
-
-    private MovedRegionsCleaner(
-      HRegionServer regionServer, Stoppable stoppable){
-      super("MovedRegionsCleaner for region " + regionServer, stoppable,
-          regionServer.movedRegionCleanerPeriod());
-      this.regionServer = regionServer;
-      this.stoppable = stoppable;
-    }
-
-    static MovedRegionsCleaner create(HRegionServer rs){
-      Stoppable stoppable = new Stoppable() {
-        private volatile boolean isStopped = false;
-        @Override public void stop(String why) { isStopped = true;}
-        @Override public boolean isStopped() {return isStopped;}
-      };
-
-      return new MovedRegionsCleaner(rs, stoppable);
-    }
-
-    @Override
-    protected void chore() {
-      regionServer.cleanMovedRegions();
-    }
-
-    @Override
-    public void stop(String why) {
-      stoppable.stop(why);
-    }
-
-    @Override
-    public boolean isStopped() {
-      return stoppable.isStopped();
-    }
   }
 
   private String getMyEphemeralNodePath() {
@@ -3757,6 +3709,9 @@ public class HRegionServer extends HasThread implements
   @Override
   public boolean reportFileArchivalForQuotas(TableName tableName,
       Collection<Entry<String, Long>> archivedFiles) {
+    if (TEST_SKIP_REPORTING_TRANSITION) {
+      return false;
+    }
     RegionServerStatusService.BlockingInterface rss = rssStub;
     if (rss == null || rsSpaceQuotaManager == null) {
       // the current server could be stopping.
